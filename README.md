@@ -1,150 +1,283 @@
-# **EquiBaskets — On-Chain Tokenized Baskets on Cardano (Aiken + ADA + Mock Oracle)**
+# EquiBasket - Decentralized Synthetic Baskets on Cardano
 
-## 📌 Overview
+Trade Real-World Baskets. Instantly, On-Chain. Mint and trade synthetic equity baskets backed by ADA collateral.
 
-EquiBaskets is a lightweight Cardano-based protocol that lets users mint and trade **tokenized baskets of multiple assets**.
-Instead of tracking a single stock or index, each basket represents a **weighted collection of assets**, and its price is calculated by a **mock oracle module** that aggregates hardcoded prices.
+## 🚀 Features
 
-This project is intentionally designed to be **simple, modular, and easy to build inside Cursor**, even if you're coming from the EVM world.
+- **Decentralized & Secure**: Built on Cardano with Aiken smart contracts
+- **Synthetic Baskets**: Create and trade custom baskets of assets
+- **ADA Collateral**: Over-collateralized positions with 150% ratio
+- **Real-time Oracle**: Price feeds for accurate basket valuations
+- **On-chain Transactions**: All operations are real Cardano transactions
+
+## 📁 Project Structure
+
+```
+offchain/
+├── app/                          # Next.js App Router pages
+│   ├── page.tsx                  # Home page
+│   ├── create/page.tsx           # Create basket page
+│   ├── mint-burn/page.tsx        # Mint & Burn page
+│   ├── trade/page.tsx            # Trade page
+│   ├── Home.tsx                  # Main app component with routing
+│   ├── client.tsx                # Client wrapper
+│   ├── layout.tsx                # Root layout
+│   └── providers.tsx             # Context providers
+├── components/
+│   ├── ui/                       # Lightweight custom UI components
+│   │   ├── Button.tsx
+│   │   ├── Card.tsx
+│   │   ├── Input.tsx
+│   │   ├── Select.tsx
+│   │   ├── Modal.tsx
+│   │   ├── Tabs.tsx
+│   │   ├── Toast.tsx
+│   │   └── index.ts
+│   ├── shared/                   # Shared components
+│   │   ├── Navbar.tsx
+│   │   ├── TransactionStatus.tsx
+│   │   ├── CollateralRatioBar.tsx
+│   │   └── PieChart.tsx
+│   ├── pages/                    # Page-specific components
+│   │   ├── Landing/
+│   │   ├── Dashboard/
+│   │   ├── CreateBasket/
+│   │   ├── MintBurn/
+│   │   └── Trade/
+│   └── connection/               # Wallet connection context
+├── config/
+│   ├── lucid.ts                  # Lucid Evolution config
+│   ├── scripts.ts                # Compiled Aiken scripts & constants
+│   ├── site.ts                   # Site configuration
+│   └── fonts.ts                  # Font configuration
+├── lib/
+│   ├── tx-builder.ts             # Transaction builder utilities
+│   └── database.ts               # Turso database service layer
+├── components/
+│   └── database/
+│       └── DatabaseProvider.tsx  # Database context provider
+├── types/
+│   ├── equibasket.ts             # EquiBasket type definitions
+│   ├── cardano.ts                # Cardano wallet types
+│   └── index.ts
+└── styles/
+    └── globals.css               # Global styles
+```
+
+## 🛠️ Technologies Used
+
+- **Next.js 14** - React framework with App Router
+- **Lucid Evolution** - Cardano transaction building library
+- **Aiken** - Smart contract language for Cardano
+- **Tailwind CSS** - Utility-first CSS framework
+- **TypeScript** - Type-safe development
+- **Turso (libSQL)** - Edge database for data persistence
+
+## 📋 Prerequisites
+
+- Node.js 18+
+- pnpm (recommended) or npm/yarn
+- A Cardano wallet (Eternl, Nami, Lace, etc.)
+- Test ADA on Preview network
+
+## 🚀 Getting Started
+
+### 1. Install Dependencies
+
+```bash
+cd offchain
+pnpm install
+```
+
+### 2. Build Aiken Scripts (from project root)
+
+```bash
+cd ..
+aiken build
+```
+
+### 3. Configure Turso Database
+
+The app uses Turso (libSQL) for data persistence. You need to set up a Turso database:
+
+#### a. Create a Turso Account & Database
+
+```bash
+# Install Turso CLI
+curl -sSfL https://get.tur.so/install.sh | bash
+
+# Login to Turso
+turso auth login
+
+# Create a database
+turso db create equibasket
+
+# Get database URL
+turso db show equibasket --url
+
+# Create auth token
+turso db tokens create equibasket
+```
+
+#### b. Configure Environment Variables
+
+Create a `.env.local` file in the `offchain` directory:
+
+```bash
+# offchain/.env.local
+NEXT_PUBLIC_TURSO_DATABASE_URL=libsql://equibasket-[your-org].turso.io
+NEXT_PUBLIC_TURSO_AUTH_TOKEN=your-auth-token-here
+```
+
+> **Note**: The `NEXT_PUBLIC_` prefix is required because the database client runs in the browser.
+
+### 4. Start Development Server
+
+```bash
+cd offchain
+pnpm dev
+```
+
+The app will be available at `http://localhost:3000`
+
+### 4. Connect Wallet
+
+1. Open the app in your browser
+2. Click "Connect Wallet" or "Launch App"
+3. Select your preferred wallet (e.g., Eternl, Nami)
+4. Approve the connection request
+
+## 📖 User Guide
+
+### Creating a Basket
+
+1. Navigate to **Create Basket** page
+2. Enter a basket name and optional description
+3. Search and add assets (BTC, ETH, SOL, etc.)
+4. Adjust weights for each asset (must sum to 100%)
+5. Review the preview pie chart
+6. Click **Create Basket** and sign the transaction
+
+### Minting Tokens
+
+1. Navigate to **Mint & Burn** page
+2. Select a basket from the dropdown
+3. Enter the amount to mint
+4. Review the required collateral (150% ratio)
+5. Click **Mint** and sign the transaction
+
+### Burning Tokens
+
+1. Navigate to **Mint & Burn** page
+2. Select the **Burn** tab
+3. Enter the amount to burn
+4. Click **Burn** and sign the transaction
+
+### Trading (UI Demo)
+
+The Trade page provides a UI for future DEX integration:
+- View basket price charts
+- Buy/Sell interface
+- Order history
+
+## 🔧 Configuration
+
+### Network Configuration
+
+Edit `config/lucid.ts` to change the network:
+
+```typescript
+export const network: Network = "Preview"; // or "Mainnet", "Preprod"
+```
+
+### Oracle Prices
+
+Default prices are in `config/scripts.ts`:
+
+```typescript
+export const DEFAULT_PRICES: Array<[string, bigint]> = [
+  ["BTC", 60_000n * PRICE_PRECISION],
+  ["ETH", 3_000n * PRICE_PRECISION],
+  // ...
+];
+```
+
+## 📊 Transaction Flow
+
+### Full Transaction Lifecycle
+
+1. **Build Transaction**: Use `EquiBasketTxBuilder` to construct the transaction
+2. **Sign Transaction**: Wallet prompts user for signature
+3. **Submit Transaction**: Transaction is submitted to the Cardano network
+4. **Confirmation**: Transaction hash is returned on success
+
+```typescript
+// Example: Creating a basket
+const txBuilder = new EquiBasketTxBuilder(lucid, address, pkh);
+const tx = await txBuilder.createBasket(basketId, name, assets);
+const txHash = await submitTx(tx);
+```
+
+## 🧪 Testing
+
+### Run Aiken Tests
+
+```bash
+cd ..
+aiken check
+```
+
+### Run Frontend Lint
+
+```bash
+cd offchain
+pnpm lint
+```
+
+## 📝 Smart Contract Interaction
+
+The frontend interacts with these Aiken validators:
+
+| Validator | Purpose |
+|-----------|---------|
+| `basket_factory` | Manages basket definitions |
+| `mock_oracle` | Provides price feeds |
+| `vault` | Manages collateral and positions |
+| `basket_token_policy` | Controls basket token minting |
+
+## 🐛 Troubleshooting
+
+### Database Not Configured Error
+If you see "Database not configured" or "URL_SCHEME_NOT_SUPPORTED" error:
+- Ensure `.env.local` file exists in the `offchain` directory
+- Check that `NEXT_PUBLIC_TURSO_DATABASE_URL` starts with `libsql://` (not `file:`)
+- Verify your Turso auth token is valid
+- Restart the development server after changing `.env.local`
+
+### Wallet Not Connecting
+- Ensure you have a compatible wallet installed
+- Check that you're on the correct network (Preview)
+- Try refreshing the page
+
+### Transaction Failed
+- Check you have enough ADA for fees (at least 5-10 ADA recommended)
+- Ensure collateral ratio is above 150%
+- Review the error message in the UI
+
+### Script Errors
+- Rebuild Aiken scripts: `aiken build`
+- Check that `plutus.json` is up to date
+
+## 📚 Resources
+
+- [Aiken Documentation](https://aiken-lang.org/)
+- [Lucid Evolution](https://github.com/lucid-evolution/lucid)
+- [Cardano Developer Portal](https://developers.cardano.org/)
+
+## 📄 License
+
+MIT License - see LICENSE file for details.
 
 ---
 
-## 🎯 What You Can Do With EquiBaskets
-
-### ✅ **Create a Basket (Fund Creator Role)**
-
-A fund creator defines:
-
-* The list of assets inside the basket
-* Their weights
-* The basket’s ID and metadata
-
-Once created, the basket becomes available for minting and trading.
-
----
-
-### ✅ **Mint Basket Tokens**
-
-Users deposit **ADA as collateral** to mint the basket token.
-Minting uses:
-
-* The latest basket price from the mock oracle
-* A predefined collateral ratio
-* Simple minting rules enforced by Aiken contracts
-
-This mechanism ensures each minted basket token is fully backed by ADA.
-
----
-
-### ✅ **Burn Basket Tokens**
-
-Users can burn their basket tokens to withdraw the corresponding amount of ADA based on the current basket price.
-
----
-
-### ✅ **Check Basket Prices**
-
-The **mock oracle module** provides a dynamic basket price on demand.
-It contains:
-
-* Hardcoded prices for individual assets
-* A price aggregation function
-* A simple interface the smart contract can read
-
-This removes complexity while still simulating a real-world multi-asset oracle.
-
----
-
-### ✅ **Basic Liquidation**
-
-If a position falls below a threshold, another user can liquidate it by repaying the debt and receiving the user's collateral at a small discount.
-(Logic is included conceptually; Cursor will generate the implementation.)
-
----
-
-## 🧱 Architecture
-
-### **1. Smart Contracts (Aiken)**
-
-You will build the following modules in Cursor:
-
-#### **📦 Basket Factory**
-
-* Registers new baskets
-* Stores metadata (assets, weights, precision)
-* Ensures each basket has a unique ID
-
-#### **💰 Vault**
-
-* Users deposit ADA
-* Mints and burns basket tokens
-* Tracks collateral and debt per user
-* Reads basket price from the oracle
-* Enforces collateral ratio rules
-* Handles liquidation
-
-#### **🪙 Minting Policy**
-
-* Controls who can mint/burn basket tokens
-* Ensures only the Vault can perform minting
-* Ensures correct spending conditions
-
-#### **🔮 Mock Oracle**
-
-* Stores hardcoded prices for several assets
-* Computes basket price based on weights
-* Returns result in standardized decimals
-* No external calls → super easy for Cardano beginners
-
----
-
-### **2. Frontend (React / TypeScript)**
-
-Cursor will scaffold a clean UI that includes:
-
-* **Basket Creation Page**
-  Enter assets, weights, and publish a new basket.
-
-* **Mint / Burn Page**
-  Deposit ADA to mint tokens or burn tokens to withdraw ADA.
-
-* **Price Dashboard**
-  View basket price computed using mock oracle.
-
-* **Portfolio Page**
-  Track user collateral, basket holdings, and debt.
-
----
-
-### **3. Off-Chain Logic (Minimal)**
-
-Because Cardano uses the eUTXO model, the off-chain components help prepare transactions:
-
-* Selecting UTXOs
-* Reading basket definitions
-* Reading the latest mock price
-* Setting transaction redeemers
-* Interacting with minting policies
-
-No need for complex bots or external oracles.
-
----
-
-## 📐 Data Flow
-
-1. Fund Creator registers a basket → Factory stores it
-2. Oracle module returns basket price (hardcoded)
-3. User deposits ADA → Vault stores collateral
-4. User mints basket tokens → Minting policy validates
-5. User can burn tokens → Vault releases ADA
-6. Liquidation can be triggered when collateral ratio becomes unsafe
-
----
-
-## 🧪 What You Can Test Easily
-
-* Create a basket with 3 assets
-* Change oracle prices by editing a constant
-* Mint/burn flows using ADA
-* Liquidation triggers
-* Reading price + metadata from UI
+Built with ❤️ for Cardano IBW 2025
