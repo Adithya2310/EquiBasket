@@ -485,10 +485,44 @@ export function TradePage() {
                               return;
                             }
 
+                            const desiredBasketAmount = BigInt(parseFloat(initialBasketAmount) * Number(TOKEN_PRECISION));
+                            const desiredAdaAmount = adaToLovelace(parseFloat(initialAdaAmount));
+
+                            // Find matching pool UTxO; if missing, bootstrap first (step 1).
+                            let poolUtxos = await txBuilder.getLiquidityPoolUtxos();
+                            let poolUtxo = poolUtxos.find((u) => {
+                              const poolDatum = decodePoolDatum(u.datum as string);
+                              return poolDatum.basket_id === selectedBasketId;
+                            });
+
+                            if (!poolUtxo) {
+                              toast("Bootstrapping pool UTxO (step 1 of 2)...");
+                              const bootstrapTx = await txBuilder.bootstrapPoolUtxo(
+                                basketUtxo,
+                                desiredBasketAmount,
+                                desiredAdaAmount
+                              );
+                              const signedBootstrap = await bootstrapTx.sign.withWallet().complete();
+                              const bootstrapHash = await signedBootstrap.submit();
+                              toast.success(`Pool UTxO bootstrapped. Tx: ${bootstrapHash}`);
+
+                              poolUtxos = await txBuilder.getLiquidityPoolUtxos();
+                              poolUtxo = poolUtxos.find((u) => {
+                                const poolDatum = decodePoolDatum(u.datum as string);
+                                return poolDatum.basket_id === selectedBasketId;
+                              });
+
+                              if (!poolUtxo) {
+                                toast.error("Bootstrapped pool UTxO not found after submit.");
+                                return;
+                              }
+                            }
+
                             const tx = await txBuilder.createLiquidityPool(
+                              poolUtxo,
                               basketUtxo,
-                              BigInt(parseFloat(initialBasketAmount) * Number(TOKEN_PRECISION)), // Corrected basket amount conversion
-                              adaToLovelace(parseFloat(initialAdaAmount))
+                              desiredBasketAmount,
+                              desiredAdaAmount
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -553,7 +587,7 @@ export function TradePage() {
                               basketUtxo,
                               BigInt(parseFloat(addBasketAmount) * Number(TOKEN_PRECISION)),
                               adaToLovelace(parseFloat(addAdaAmount)),
-                              0n // minLpTokens - for simplicity, assuming 0 slippage tolerance for now
+                              1n // minLpTokens must be > 0 per validator; using minimum of 1
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();

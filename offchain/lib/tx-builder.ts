@@ -17,17 +17,17 @@ import {
 
 import { network } from "@/config/lucid";
 import { Scripts, ScriptHashes, AppliedScripts, PRICE_PRECISION, COLLATERAL_RATIO, WEIGHT_PRECISION } from "@/config/scripts";
-import type { 
-  BasketDatum, 
-  VaultDatum, 
-  OracleDatum, 
-  PoolDatum, 
-  PoolRedeemer, 
-  LpMintRedeemer, 
+import type {
+  BasketDatum,
+  VaultDatum,
+  OracleDatum,
+  PoolDatum,
+  PoolRedeemer,
+  LpMintRedeemer,
   BasketAsset,
   TxStatus,
   LogEntry,
-  LogLevel 
+  LogLevel
 } from "@/types/equibasket";
 
 // =============================================================================
@@ -44,9 +44,9 @@ export function log(level: LogLevel, message: string, data?: unknown) {
     data,
   };
   logs.push(entry);
-  
+
   const prefix = `[${level.toUpperCase()}] [${entry.timestamp.toISOString()}]`;
-  
+
   switch (level) {
     case "error":
       console.error(prefix, message, data || "");
@@ -60,7 +60,7 @@ export function log(level: LogLevel, message: string, data?: unknown) {
     default:
       console.log(prefix, message, data || "");
   }
-  
+
   return entry;
 }
 
@@ -104,7 +104,7 @@ export function encodeOracleDatum(datum: OracleDatum): string {
     const assetIdHex = fromText(id);  // Convert asset name to UTF-8 hex
     return [assetIdHex, price];  // Tuple = plain list
   });
-  
+
   // Debug: Log the structure being encoded
   log("debug", "Encoding OracleDatum:", {
     pricesCount: pricesList.length,
@@ -116,32 +116,32 @@ export function encodeOracleDatum(datum: OracleDatum): string {
     adminPkh: datum.admin,
     adminLength: datum.admin.length
   });
-  
+
   // Correct order per plutus.json: prices, last_updated, admin
   const datumData = new Constr(0, [
     pricesList,
     datum.last_updated,
     datum.admin,
   ]);
-  
+
   const encoded = Data.to(datumData);
-  
+
   // Log first part of encoded datum for debugging
   log("debug", "Encoded OracleDatum CBOR:", {
     fullLength: encoded.length,
     preview: encoded.substring(0, 120)
   });
-  
+
   return encoded;
 }
 
 export function encodeBasketDatum(datum: BasketDatum): string {
   // BasketDatum { basket_id, name, assets, creator, created_at }
   // Note: In Aiken, Tuples are encoded as plain lists, NOT constructors
-  const assetsList = datum.assets.map(asset => 
+  const assetsList = datum.assets.map(asset =>
     [fromText(asset.id), BigInt(asset.weight)]  // Tuple = plain list, not Constr
   );
-  
+
   const datumData = new Constr(0, [
     fromText(datum.basket_id),
     fromText(datum.name),
@@ -149,7 +149,7 @@ export function encodeBasketDatum(datum: BasketDatum): string {
     datum.creator,
     datum.created_at,
   ]);
-  
+
   return Data.to(datumData);
 }
 
@@ -162,7 +162,7 @@ export function encodeVaultDatum(datum: VaultDatum): string {
     datum.minted_tokens,
     datum.created_at,
   ]);
-  
+
   return Data.to(datumData);
 }
 
@@ -187,7 +187,7 @@ export const BasketRedeemers = {
   createBasket: (): string => Data.to(new Constr(0, [])),
   updateBasket: (newWeights: BasketAsset[]): string => {
     // Tuples are encoded as plain lists in Aiken
-    const weightsList = newWeights.map(asset => 
+    const weightsList = newWeights.map(asset =>
       [fromText(asset.id), BigInt(asset.weight)]  // Tuple = plain list
     );
     return Data.to(new Constr(1, [weightsList]));
@@ -243,13 +243,13 @@ export const LpMintRedeemers = {
 export function decodeVaultDatum(datumHex: string): VaultDatum {
   try {
     const decoded = Data.from(datumHex) as Constr<Data>;
-    
+
     if (decoded.index !== 0 || decoded.fields.length !== 5) {
       throw new Error("Invalid VaultDatum structure");
     }
-    
+
     const [owner, basket_id, collateral_ada, minted_tokens, created_at] = decoded.fields;
-    
+
     return {
       owner: owner as string,
       basket_id: toText(basket_id as string),  // Convert hex to text
@@ -270,19 +270,19 @@ export function decodeVaultDatum(datumHex: string): VaultDatum {
 export function decodeBasketDatum(datumHex: string): BasketDatum {
   try {
     const decoded = Data.from(datumHex) as Constr<Data>;
-    
+
     if (decoded.index !== 0 || decoded.fields.length !== 5) {
       throw new Error("Invalid BasketDatum structure");
     }
-    
+
     const [basket_id, name, assets, creator, created_at] = decoded.fields;
-    
+
     // Decode assets (list of tuples: [asset_id, weight])
     const decodedAssets = (assets as Array<[string, bigint]>).map(([assetIdHex, weight]) => ({
       id: toText(assetIdHex),
       weight: Number(weight),
     }));
-    
+
     return {
       basket_id: toText(basket_id as string),
       name: toText(name as string),
@@ -327,23 +327,56 @@ export function decodePoolDatum(datumHex: string): PoolDatum {
 // UTILITY FUNCTIONS
 // =============================================================================
 
+const MIN_LIQUIDITY = 1000n; // Matches on-chain min_liquidity
+
+// Integer square root for BigInt (Newton's method)
+function sqrtBigInt(value: bigint): bigint {
+  if (value < 0n) throw new Error("sqrtBigInt only supports positive values");
+  if (value < 2n) return value;
+  let x0 = value / 2n;
+  let x1 = (x0 + value / x0) / 2n;
+  while (x1 < x0) {
+    x0 = x1;
+    x1 = (x0 + value / x0) / 2n;
+  }
+  return x0;
+}
+
+// Match on-chain LP calculation
+function calculateLpTokens(
+  basketAmount: bigint,
+  adaAmount: bigint,
+  basketReserve: bigint,
+  adaReserve: bigint,
+  lpSupply: bigint
+): bigint {
+  if (lpSupply === 0n) {
+    const initialLiquidity = sqrtBigInt(basketAmount * adaAmount);
+    return initialLiquidity - MIN_LIQUIDITY;
+  }
+
+  const basketLp = (basketAmount * lpSupply) / basketReserve;
+  const adaLp = (adaAmount * lpSupply) / adaReserve;
+  return basketLp < adaLp ? basketLp : adaLp;
+}
+
 export function calculateBasketPrice(
   oraclePrices: Map<string, bigint>,
   basketAssets: BasketAsset[]
 ): bigint {
   let totalPrice = 0n;
-  
+
   for (const asset of basketAssets) {
     const price = oraclePrices.get(asset.id);
     if (!price) {
       log("error", `Asset ${asset.id} not found in oracle prices`);
       throw new Error(`Asset ${asset.id} not found in oracle`);
     }
-    
+
     const weightedPrice = (price * BigInt(asset.weight)) / WEIGHT_PRECISION;
     totalPrice += weightedPrice;
   }
-  
+
   return totalPrice;
 }
 
@@ -376,28 +409,28 @@ export class EquiBasketTxBuilder {
   private lucid: LucidEvolution;
   private address: Address;
   private pkh: string;
-  
+
   constructor(lucid: LucidEvolution, address: Address, pkh: string) {
     this.lucid = lucid;
     this.address = address;
     this.pkh = pkh;
   }
-  
+
   // ---------------------------------------------------------------------------
   // ORACLE TRANSACTIONS
   // ---------------------------------------------------------------------------
-  
+
   async publishOracle(prices: Array<[string, bigint]>): Promise<TxSignBuilder> {
     log("info", "Building publish oracle transaction", { prices });
-    
+
     const oracleAddress = ValidatorAddresses.mockOracle();
-    
+
     const datum: OracleDatum = {
       prices,
       last_updated: BigInt(Date.now()),
       admin: this.pkh,
     };
-    
+
     // Encode and log the datum for debugging
     const encodedDatum = encodeOracleDatum(datum);
     log("debug", "Oracle datum being published:", {
@@ -406,7 +439,7 @@ export class EquiBasketTxBuilder {
       encodedDatumPreview: encodedDatum.substring(0, 100) + "...",
       encodedDatumLength: encodedDatum.length
     });
-    
+
     const tx = await this.lucid
       .newTx()
       .pay.ToAddressWithData(
@@ -416,30 +449,30 @@ export class EquiBasketTxBuilder {
       )
       .validTo(Date.now() + 15 * 60_000)
       .complete();
-    
+
     log("info", "Oracle publish transaction built successfully");
     return tx;
   }
-  
+
   // ---------------------------------------------------------------------------
   // BASKET TRANSACTIONS
   // ---------------------------------------------------------------------------
-  
+
   async createBasket(
     basketId: string,
     name: string,
     assets: BasketAsset[]
   ): Promise<TxSignBuilder> {
     log("info", "Building create basket transaction", { basketId, name, assets });
-    
+
     // Validate weights sum to 10000
     const totalWeight = assets.reduce((sum, a) => sum + a.weight, 0);
     if (totalWeight !== 10000) {
       throw new Error(`Weights must sum to 10000, got ${totalWeight}`);
     }
-    
+
     const factoryAddress = ValidatorAddresses.basketFactory();
-    
+
     const datum: BasketDatum = {
       basket_id: basketId,
       name,
@@ -447,7 +480,7 @@ export class EquiBasketTxBuilder {
       creator: this.pkh,
       created_at: BigInt(Date.now()),
     };
-    
+
     const tx = await this.lucid
       .newTx()
       .pay.ToAddressWithData(
@@ -458,23 +491,23 @@ export class EquiBasketTxBuilder {
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
       .complete();
-    
+
     log("info", "Create basket transaction built successfully");
     return tx;
   }
-  
+
   // ---------------------------------------------------------------------------
   // VAULT TRANSACTIONS
   // ---------------------------------------------------------------------------
-  
+
   async openVaultAndDeposit(
     basketId: string,
     collateralAda: bigint
   ): Promise<TxSignBuilder> {
     log("info", "Building open vault transaction", { basketId, collateralAda });
-    
+
     const vaultAddress = ValidatorAddresses.vault();
-    
+
     const datum: VaultDatum = {
       owner: this.pkh,
       basket_id: basketId,
@@ -482,7 +515,7 @@ export class EquiBasketTxBuilder {
       minted_tokens: 0n,
       created_at: BigInt(Date.now()),
     };
-    
+
     const tx = await this.lucid
       .newTx()
       .pay.ToAddressWithData(
@@ -493,11 +526,11 @@ export class EquiBasketTxBuilder {
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
       .complete();
-    
+
     log("info", "Open vault transaction built successfully");
     return tx;
   }
-  
+
   async mintBasketTokens(
     vaultUtxo: UTxO,
     oracleUtxo: UTxO,
@@ -505,7 +538,7 @@ export class EquiBasketTxBuilder {
     mintAmount: bigint
   ): Promise<TxSignBuilder> {
     log("info", "Building mint transaction", { mintAmount });
-    
+
     // Debug: Log the UTxOs being used
     log("debug", "Using Oracle UTxO:", {
       txHash: oracleUtxo.txHash,
@@ -522,15 +555,15 @@ export class EquiBasketTxBuilder {
       txHash: basketUtxo.txHash,
       outputIndex: basketUtxo.outputIndex
     });
-    
+
     const vault = Validators.vault();
     const mintingPolicy = Validators.basketTokenPolicy();
     const policyId = mintingPolicyToId(mintingPolicy);
-    
+
     // Parse current vault datum from the UTxO
     const currentDatumHex = vaultUtxo.datum;
     if (!currentDatumHex) throw new Error("Vault UTxO has no datum");
-    
+
     // Decode the actual vault datum from the UTxO
     const vaultDatum = decodeVaultDatum(currentDatumHex);
     log("debug", "Decoded vault datum:", {
@@ -539,34 +572,34 @@ export class EquiBasketTxBuilder {
       collateral_ada: vaultDatum.collateral_ada.toString(),
       minted_tokens: vaultDatum.minted_tokens.toString(),
     });
-    
+
     // Verify the owner matches
     // if (vaultDatum.owner !== this.pkh) {
     //   throw new Error("You are not the owner of this vault");
     // }
-    
+
     // Update vault datum with new minted tokens
     const newVaultDatum: VaultDatum = {
       ...vaultDatum,
       minted_tokens: vaultDatum.minted_tokens + mintAmount,
     };
-    
+
     // Token name is the basket_id (must match the on-chain vault datum)
     const tokenName = fromText(vaultDatum.basket_id);
     const assetUnit = toUnit(policyId, tokenName);
-    
+
     log("debug", "Token to mint:", {
       basket_id: vaultDatum.basket_id,
       tokenNameHex: tokenName,
       assetUnit: assetUnit,
     });
-    
+
     const vaultRedeemer = VaultRedeemers.mint(mintAmount);
     const mintRedeemer = MintRedeemers.mint(
       vaultUtxo.txHash,
       vaultUtxo.outputIndex
     );
-    
+
     const tx = await this.lucid
       .newTx()
       .readFrom([oracleUtxo, basketUtxo])
@@ -582,11 +615,11 @@ export class EquiBasketTxBuilder {
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
       .complete();
-    
+
     log("info", "Mint transaction built successfully");
     return tx;
   }
-  
+
   async burnBasketTokens(
     vaultUtxo: UTxO,
     oracleUtxo: UTxO,
@@ -594,15 +627,15 @@ export class EquiBasketTxBuilder {
     burnAmount: bigint
   ): Promise<TxSignBuilder> {
     log("info", "Building burn transaction", { burnAmount });
-    
+
     const vault = Validators.vault();
     const mintingPolicy = Validators.basketTokenPolicy();
     const policyId = mintingPolicyToId(mintingPolicy);
-    
+
     // Parse current vault datum from the UTxO
     const currentDatumHex = vaultUtxo.datum;
     if (!currentDatumHex) throw new Error("Vault UTxO has no datum");
-    
+
     // Decode the actual vault datum from the UTxO
     const vaultDatum = decodeVaultDatum(currentDatumHex);
     log("debug", "Decoded vault datum for burn:", {
@@ -610,33 +643,33 @@ export class EquiBasketTxBuilder {
       basket_id: vaultDatum.basket_id,
       minted_tokens: vaultDatum.minted_tokens.toString(),
     });
-    
+
     // Verify the owner matches
     // if (vaultDatum.owner !== this.pkh) {
     //   throw new Error("You are not the owner of this vault");
     // }
-    
+
     // Verify we have enough tokens to burn
     if (vaultDatum.minted_tokens < burnAmount) {
       throw new Error(`Cannot burn ${burnAmount} tokens, only ${vaultDatum.minted_tokens} minted`);
     }
-    
+
     // Update vault datum with reduced minted tokens
     const newVaultDatum: VaultDatum = {
       ...vaultDatum,
       minted_tokens: vaultDatum.minted_tokens - burnAmount,
     };
-    
+
     // Token name is the basket_id (must match the on-chain vault datum)
     const tokenName = fromText(vaultDatum.basket_id);
     const assetUnit = toUnit(policyId, tokenName);
-    
+
     const vaultRedeemer = VaultRedeemers.burn(burnAmount);
     const mintRedeemer = MintRedeemers.burn(
       vaultUtxo.txHash,
       vaultUtxo.outputIndex
     );
-    
+
     const tx = await this.lucid
       .newTx()
       .readFrom([oracleUtxo, basketUtxo])
@@ -652,7 +685,7 @@ export class EquiBasketTxBuilder {
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
       .complete();
-    
+
     log("info", "Burn transaction built successfully");
     return tx;
   }
@@ -662,6 +695,7 @@ export class EquiBasketTxBuilder {
   // ---------------------------------------------------------------------------
 
   async createLiquidityPool(
+    poolUtxo: UTxO, // Existing pool UTxO (required by LP mint policy)
     basketUtxo: UTxO, // Reference to the basket UTxO (from factory)
     initialBasketAmount: bigint,
     initialAdaAmount: bigint
@@ -671,39 +705,61 @@ export class EquiBasketTxBuilder {
     const poolAddress = ValidatorAddresses.liquidityPool();
     const lpMintingPolicy = Validators.lpTokenPolicy();
     const lpPolicyId = mintingPolicyToId(lpMintingPolicy);
+    const basketTokenPolicy = Validators.basketTokenPolicy();
+    const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
+    // const basketTokenPolicy = Validators.basketTokenPolicy();
+    // const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
 
-    // Get basket ID from the basket UTxO
+    // Get basket ID from pool datum (policy requires pool input) and cross-check basket UTxO
+    const poolDatum = decodePoolDatum(poolUtxo.datum as string);
+    const basketId = poolDatum.basket_id;
     const basketDatum = decodeBasketDatum(basketUtxo.datum as string);
-    const basketId = basketDatum.basket_id;
+    if (basketDatum.basket_id !== basketId) {
+      throw new Error(`Basket UTxO (${basketDatum.basket_id}) does not match pool datum basket (${basketId})`);
+    }
 
     // LP token name is the basketId
     const lpTokenName = fromText(basketId);
     const lpAssetUnit = toUnit(lpPolicyId, lpTokenName);
+    const basketAssetUnit = toUnit(basketPolicyId, lpTokenName); // Basket tokens use basket policy
+
+    // Calculate LP token supply and minted amount (match on-chain CreatePool logic)
+    const initialLpSupply = sqrtBigInt(initialBasketAmount * initialAdaAmount);
+    const lpToMint = initialLpSupply - MIN_LIQUIDITY;
+    if (lpToMint <= 0n) {
+      throw new Error("Initial liquidity too small to mint LP tokens (must exceed minimum liquidity)");
+    }
+    if (poolDatum.basket_reserve !== initialBasketAmount || poolDatum.ada_reserve !== initialAdaAmount) {
+      throw new Error("Pool datum reserves do not match the provided initial amounts");
+    }
+    if (poolDatum.lp_token_supply !== initialLpSupply) {
+      throw new Error("Pool datum lp_token_supply does not match sqrt(initialBasket * initialAda)");
+    }
 
     const datum: PoolDatum = {
       basket_id: basketId,
       basket_reserve: initialBasketAmount,
       ada_reserve: initialAdaAmount,
-      lp_token_supply: 0n, // Will be updated on-chain
+      lp_token_supply: initialLpSupply,
       created_at: BigInt(Date.now()),
     };
 
     const poolRedeemer = PoolRedeemers.createPool(initialBasketAmount, initialAdaAmount);
-    const lpMintRedeemer = LpMintRedeemers.mintLpTokens(basketUtxo); // Using basketUtxo as poolRef for initial mint
+    const lpMintRedeemer = LpMintRedeemers.mintLpTokens(poolUtxo); // Must reference pool input for policy
+    const walletUtxos = await this.lucid.wallet().getUtxos();
 
     const tx = await this.lucid
       .newTx()
       .readFrom([basketUtxo]) // Reference to the basket UTxO
-      .collectFrom(
-        await this.lucid.wallet.getUtxos(), // Collect from wallet for initial ADA & Basket
-        poolRedeemer
-      )
+      .collectFrom(walletUtxos) // Collect from wallet for initial ADA & Basket
+      .collectFrom([poolUtxo], poolRedeemer) // Spend pool UTxO so policy can see it
       .pay.ToAddressWithData(
         poolAddress,
         { kind: "inline", value: encodePoolDatum(datum) },
-        { lovelace: initialAdaAmount, [lpAssetUnit]: initialBasketAmount } // Pay initial ADA and basket tokens
+        { lovelace: initialAdaAmount, [basketAssetUnit]: initialBasketAmount } // Pay initial ADA and basket tokens
       )
-      .mintAssets({ [lpAssetUnit]: 0n }, lpMintRedeemer) // Mint 0 LP tokens initially, validator will adjust
+      .pay.ToAddress(this.address, { [lpAssetUnit]: lpToMint }) // Send freshly minted LP tokens to provider
+      .mintAssets({ [lpAssetUnit]: lpToMint }, lpMintRedeemer)
       .attach.SpendingValidator(Validators.liquidityPool())
       .attach.MintingPolicy(lpMintingPolicy)
       .addSignerKey(this.pkh)
@@ -711,6 +767,59 @@ export class EquiBasketTxBuilder {
       .complete();
 
     log("info", "Create liquidity pool transaction built successfully");
+    return tx;
+  }
+
+  /**
+   * Bootstrap a pool UTxO at the liquidity pool address with inline datum and funding.
+   * This is step 1 of the two-step flow. Step 2 spends this UTxO via createLiquidityPool().
+   */
+  async bootstrapPoolUtxo(
+    basketUtxo: UTxO,
+    initialBasketAmount: bigint,
+    initialAdaAmount: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Bootstrapping pool UTxO", { initialBasketAmount, initialAdaAmount });
+
+    const poolAddress = ValidatorAddresses.liquidityPool();
+    const basketTokenPolicy = Validators.basketTokenPolicy();
+    const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
+
+    const basketDatum = decodeBasketDatum(basketUtxo.datum as string);
+    const basketId = basketDatum.basket_id;
+
+    const lpTokenName = fromText(basketId);
+    const basketAssetUnit = toUnit(basketPolicyId, lpTokenName);
+
+    const initialLpSupply = sqrtBigInt(initialBasketAmount * initialAdaAmount);
+    if (initialLpSupply <= 0n) {
+      throw new Error("Initial liquidity too small to bootstrap pool UTxO");
+    }
+
+    const datum: PoolDatum = {
+      basket_id: basketId,
+      basket_reserve: initialBasketAmount,
+      ada_reserve: initialAdaAmount,
+      lp_token_supply: initialLpSupply,
+      created_at: BigInt(Date.now()),
+    };
+
+    const walletUtxos = await this.lucid.wallet().getUtxos();
+
+    const tx = await this.lucid
+      .newTx()
+      .readFrom([basketUtxo]) // reference basket for context
+      .collectFrom(walletUtxos) // fund ADA and basket tokens
+      .pay.ToAddressWithData(
+        poolAddress,
+        { kind: "inline", value: encodePoolDatum(datum) },
+        { lovelace: initialAdaAmount, [basketAssetUnit]: initialBasketAmount }
+      )
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Bootstrap pool UTxO transaction built successfully");
     return tx;
   }
 
@@ -732,19 +841,52 @@ export class EquiBasketTxBuilder {
 
     const lpTokenName = fromText(basketId);
     const lpAssetUnit = toUnit(lpPolicyId, lpTokenName);
+    const basketTokenPolicy = Validators.basketTokenPolicy();
+    const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
+    const basketAssetUnit = toUnit(basketPolicyId, lpTokenName);
+
+    const lpTokens = calculateLpTokens(
+      basketAmount,
+      adaAmount,
+      poolDatum.basket_reserve,
+      poolDatum.ada_reserve,
+      poolDatum.lp_token_supply
+    );
+
+    if (lpTokens <= 0n) {
+      throw new Error("Calculated LP tokens is zero or negative; check provided amounts");
+    }
+    if (lpTokens < minLpTokens) {
+      throw new Error(`Slippage too high: calculated LP ${lpTokens} below minimum ${minLpTokens}`);
+    }
 
     const poolRedeemer = PoolRedeemers.addLiquidity(basketAmount, adaAmount, minLpTokens);
     const lpMintRedeemer = LpMintRedeemers.mintLpTokens(poolUtxo);
+    const walletUtxos = await this.lucid.wallet().getUtxos();
 
     const tx = await this.lucid
       .newTx()
       .readFrom([basketUtxo])
+      .collectFrom(walletUtxos) // provide ADA & basket tokens from wallet
       .collectFrom([poolUtxo], poolRedeemer)
-      .mintAssets({ [lpAssetUnit]: 0n }, lpMintRedeemer) // Mint 0 LP tokens initially, validator will adjust
-      .pay.ToAddress(
+      .mintAssets({ [lpAssetUnit]: lpTokens }, lpMintRedeemer)
+      .pay.ToAddressWithData(
         ValidatorAddresses.liquidityPool(),
-        { lovelace: poolUtxo.assets.lovelace + adaAmount, [lpAssetUnit]: poolUtxo.assets[lpAssetUnit] + basketAmount }
+        {
+          kind: "inline",
+          value: encodePoolDatum({
+            ...poolDatum,
+            basket_reserve: poolDatum.basket_reserve + basketAmount,
+            ada_reserve: poolDatum.ada_reserve + adaAmount,
+            lp_token_supply: poolDatum.lp_token_supply + lpTokens,
+          }),
+        },
+        {
+          lovelace: poolUtxo.assets.lovelace + adaAmount,
+          [basketAssetUnit]: (poolUtxo.assets[basketAssetUnit] || 0n) + basketAmount,
+        }
       )
+      .pay.ToAddress(this.address, { [lpAssetUnit]: lpTokens }) // LP tokens to provider
       .attach.SpendingValidator(pool)
       .attach.MintingPolicy(lpMintingPolicy)
       .addSignerKey(this.pkh)
@@ -858,15 +1000,15 @@ export class EquiBasketTxBuilder {
     return tx;
   }
 
-  
+
   // ---------------------------------------------------------------------------
   // QUERY FUNCTIONS
   // ---------------------------------------------------------------------------
-  
+
   async getOracleUtxos(): Promise<UTxO[]> {
     const address = ValidatorAddresses.mockOracle();
     const utxos = await this.lucid.utxosAt(address);
-    
+
     // Debug: Log oracle UTxOs to help identify datum issues
     log("debug", `Found ${utxos.length} oracle UTxO(s) at ${address}`);
     utxos.forEach((utxo, i) => {
@@ -877,31 +1019,31 @@ export class EquiBasketTxBuilder {
         datumPreview: utxo.datum ? utxo.datum.substring(0, 100) + "..." : "none"
       });
     });
-    
+
     return utxos;
   }
-  
+
   /**
    * Get oracle UTxOs filtered by admin (your PKH).
    * This helps ensure you use an oracle you deployed.
    */
   async getMyOracleUtxos(): Promise<UTxO[]> {
     const utxos = await this.getOracleUtxos();
-    
+
     // Filter by admin PKH if possible (requires parsing datums)
     // For now, prefer the most recent (last) UTxO
     // This assumes newer deploys appear later
     if (utxos.length > 1) {
       log("warn", `Multiple oracle UTxOs found (${utxos.length}). Consider cleaning up old oracles.`);
     }
-    
+
     return utxos;
   }
-  
+
   async getBasketUtxos(): Promise<UTxO[]> {
     const address = ValidatorAddresses.basketFactory();
     const utxos = await this.lucid.utxosAt(address);
-    
+
     // Debug: Log basket UTxOs
     log("debug", `Found ${utxos.length} basket UTxO(s) at ${address}`);
     utxos.forEach((utxo, i) => {
@@ -912,14 +1054,14 @@ export class EquiBasketTxBuilder {
         datumPreview: utxo.datum ? utxo.datum.substring(0, 100) + "..." : "none"
       });
     });
-    
+
     return utxos;
   }
-  
+
   async getVaultUtxos(): Promise<UTxO[]> {
     const address = ValidatorAddresses.vault();
     const utxos = await this.lucid.utxosAt(address);
-    
+
     // Debug: Log vault UTxOs
     log("debug", `Found ${utxos.length} vault UTxO(s) at ${address}`);
     utxos.forEach((utxo, i) => {
@@ -930,10 +1072,10 @@ export class EquiBasketTxBuilder {
         lovelace: utxo.assets.lovelace?.toString() || "0"
       });
     });
-    
+
     return utxos;
   }
-  
+
   async getUserVaultUtxos(): Promise<UTxO[]> {
     const allVaults = await this.getVaultUtxos();
     // Filter by owner (would need to parse datums)
@@ -967,10 +1109,10 @@ export class EquiBasketTxBuilder {
 export async function submitTx(tx: TxSignBuilder): Promise<string> {
   log("info", "Signing transaction...");
   const txSigned = await tx.sign.withWallet().complete();
-  
+
   log("info", "Submitting transaction...");
   const txHash = await txSigned.submit();
-  
+
   log("info", "Transaction submitted successfully", { txHash });
   return txHash;
 }
