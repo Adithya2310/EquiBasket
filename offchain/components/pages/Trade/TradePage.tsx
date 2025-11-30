@@ -334,11 +334,11 @@ export function TradePage() {
         {/* Trade Panel */}
         <div>
           <Card>
-            <Tabs defaultValue="exchange">
+            <Tabs defaultValue="swap">
               <TabsList className="w-full">
-                <Tab value="exchange">Exchange</Tab>
-                <Tab value="liquidity">Liquidity</Tab>
-                <Tab value="swap">Swap</Tab>
+                {/* <Tab value="exchange">Exchange</Tab> */}
+                <Tab className="w-full" value="swap">Swap</Tab>
+                <Tab className="w-full" value="liquidity">Liquidity</Tab>
               </TabsList>
 
               <TabPanel value="exchange">
