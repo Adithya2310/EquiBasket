@@ -32,6 +32,15 @@ try {
         'hello_word.hello_world.mint': {
             scriptKey: 'HelloWorld',
             hashKey: 'HelloWorld'
+        },
+        'liquidity_pool.liquidity_pool.spend': {
+            scriptKey: 'LiquidityPool',
+            hashKey: 'LiquidityPoolUnapplied',
+            rawScriptKey: 'rawLiquidityPoolScript' // Add this for raw script update
+        },
+        'lp_token_policy.lp_token_policy.mint': {
+            scriptKey: 'LpTokenPolicy',
+            hashKey: 'LpTokenPolicy'
         }
     };
 
@@ -45,9 +54,7 @@ try {
             // Update Scripts object
             if (config.scriptKey) {
                 const compiledCode = validator.compiledCode;
-                // Regex to find the key in Scripts object and replace the string inside applyDoubleCborEncoding
-                // Matches: key: applyDoubleCborEncoding(\n    "OLD_CODE"
-                const scriptRegex = new RegExp(`(${config.scriptKey}:\\s*applyDoubleCborEncoding\\(\\s*")([a-fA-F0-9]+)(")`, 'g');
+                const scriptRegex = new RegExp(`(${config.scriptKey}:\\s*applyDoubleCborEncoding\\(\\s*")([a-fA-F0-9]*)(")`, 'g');
 
                 if (scriptRegex.test(scriptsTsContent)) {
                     scriptsTsContent = scriptsTsContent.replace(scriptRegex, `$1${compiledCode}$3`);
@@ -60,9 +67,7 @@ try {
             // Update ScriptHashes object
             if (config.hashKey) {
                 const hash = validator.hash;
-                // Regex to find the key in ScriptHashes object
-                // Matches: key: "OLD_HASH",
-                const hashRegex = new RegExp(`(${config.hashKey}:\\s*")([a-fA-F0-9]+)(")`, 'g');
+                const hashRegex = new RegExp(`(${config.hashKey}:\\s*")([a-fA-F0-9]*)(")`, 'g');
 
                 if (hashRegex.test(scriptsTsContent)) {
                     scriptsTsContent = scriptsTsContent.replace(hashRegex, `$1${hash}$3`);
@@ -73,6 +78,31 @@ try {
             }
         }
     });
+
+    // Handle raw scripts for parameterized validators (Vault and LiquidityPool)
+    const vaultValidator = validators.find(v => v.title === 'vault.vault.spend');
+    if (vaultValidator) {
+        const rawVaultScript = vaultValidator.compiledCode;
+        const rawVaultScriptRegex = /(const\s+rawVaultScript\s*=\s*")([a-fA-F0-9]*)(")/;
+        if (rawVaultScriptRegex.test(scriptsTsContent)) {
+            scriptsTsContent = scriptsTsContent.replace(rawVaultScriptRegex, `$1${rawVaultScript}$3`);
+            console.log('  Updated Raw Vault Script');
+        } else {
+            console.warn('  Could not find rawVaultScript entry');
+        }
+    }
+
+    const liquidityPoolValidator = validators.find(v => v.title === 'liquidity_pool.liquidity_pool.spend');
+    if (liquidityPoolValidator) {
+        const rawLiquidityPoolScript = liquidityPoolValidator.compiledCode;
+        const rawLiquidityPoolScriptRegex = /(const\s+rawLiquidityPoolScript\s*=\s*")([a-fA-F0-9]*)(")/;
+        if (rawLiquidityPoolScriptRegex.test(scriptsTsContent)) {
+            scriptsTsContent = scriptsTsContent.replace(rawLiquidityPoolScriptRegex, `$1${rawLiquidityPoolScript}$3`);
+            console.log('  Updated Raw Liquidity Pool Script');
+        } else {
+            console.warn('  Could not find rawLiquidityPoolScript entry');
+        }
+    }
 
     fs.writeFileSync(scriptsTsPath, scriptsTsContent, 'utf8');
     console.log('Successfully updated scripts.ts');

@@ -7,6 +7,11 @@ import { useWallet } from "@/components/connection/context";
 import { useDatabase } from "@/components/database/DatabaseProvider";
 import { Button, Card, CardTitle, Input, Select } from "@/components/ui";
 import { Tabs, TabsList, Tab, TabPanel } from "@/components/ui";
+import { useLucid } from "@/hooks/useLucid"; // New
+import { EquiBasketTxBuilder, adaToLovelace, lovelaceToAda, unitsToTokens } from "@/lib/tx-builder"; // New
+import { TOKEN_PRECISION } from "@/config/scripts"; // New
+import { toast } from "react-hot-toast"; // New
+import type { UTxO } from "@evolution-sdk/lucid"; // New
 
 // Mock historical data for the chart
 const generateMockData = (basePrice: number) => {
@@ -37,7 +42,15 @@ const MOCK_ORDERS = [
 
 export function TradePage() {
   const [connection] = useWallet();
+  const { lucid, pkh, address } = useLucid(); // New
   const { baskets, oraclePrices, isLoading } = useDatabase();
+
+  const txBuilder = useMemo(() => { // New
+    if (lucid && address && pkh) {
+      return new EquiBasketTxBuilder(lucid, address, pkh);
+    }
+    return undefined;
+  }, [lucid, address, pkh]);
   
   const [selectedBasketId, setSelectedBasketId] = useState<string>("");
   const [timeRange, setTimeRange] = useState("1D");
@@ -46,6 +59,18 @@ export function TradePage() {
   // Buy/Sell form state
   const [buyAmount, setBuyAmount] = useState("");
   const [sellAmount, setSellAmount] = useState("");
+
+  // Liquidity Pool form state
+  const [initialAdaAmount, setInitialAdaAmount] = useState("");
+  const [initialBasketAmount, setInitialBasketAmount] = useState("");
+  const [addAdaAmount, setAddAdaAmount] = useState("");
+  const [addBasketAmount, setAddBasketAmount] = useState("");
+  const [removeLpTokens, setRemoveLpTokens] = useState("");
+  const [swapBasketIn, setSwapBasketIn] = useState("");
+  const [swapAdaIn, setSwapAdaIn] = useState("");
+
+  const [poolUtxos, setPoolUtxos] = useState<UTxO[]>([]); // New
+  const [selectedPoolId, setSelectedPoolId] = useState<string>(""); // New
 
   // Get ADA price
   const adaPrice = oraclePrices.find((p) => p.assetId === "ADA")?.priceUsd || 0.5;
@@ -64,6 +89,27 @@ export function TradePage() {
       setSelectedBasketId(baskets[0].basketId);
     }
   }, [baskets, selectedBasketId]);
+
+  // Fetch liquidity pools
+  useEffect(() => {
+    const fetchPools = async () => {
+      if (txBuilder) {
+        try {
+          const pools = await txBuilder.getLiquidityPoolUtxos();
+          setPoolUtxos(pools);
+          if (pools.length > 0 && !selectedPoolId) {
+            // Decode datum to get basketId for selecting pool
+            const poolDatum = txBuilder.decodePoolDatum(pools[0].datum as string);
+            setSelectedPoolId(poolDatum.basket_id);
+          }
+        } catch (error) {
+          console.error("Failed to fetch liquidity pools:", error);
+          toast.error("Failed to fetch liquidity pools.");
+        }
+      }
+    };
+    fetchPools();
+  }, [txBuilder, selectedPoolId]); // Added selectedPoolId to dependencies
 
   const basketPrice = selectedBasket?.price || 0;
 
@@ -101,6 +147,23 @@ export function TradePage() {
     value: b.basketId,
     label: b.name,
   }));
+
+  const poolOptions = poolUtxos.map((p) => {
+    const datum = txBuilder?.decodePoolDatum(p.datum as string);
+    return {
+      value: datum?.basket_id || "",
+      label: `Pool: ${datum?.basket_id} (ADA: ${lovelaceToAda(datum?.ada_reserve || 0n).toFixed(2)}, Basket: ${unitsToTokens(datum?.basket_reserve || 0n).toFixed(2)})`,
+    };
+  });
+
+  const selectedPool = useMemo(() => {
+    if (!txBuilder) return undefined;
+    const pool = poolUtxos.find((p) => {
+      const datum = txBuilder.decodePoolDatum(p.datum as string);
+      return datum.basket_id === selectedPoolId;
+    });
+    return pool;
+  }, [poolUtxos, selectedPoolId, txBuilder]);
 
   if (isLoading) {
     return (
@@ -266,99 +329,452 @@ export function TradePage() {
         {/* Trade Panel */}
         <div>
           <Card>
-            <Tabs defaultValue="buy">
+            <Tabs defaultValue="exchange">
               <TabsList className="w-full">
-                <Tab value="buy">Buy</Tab>
-                <Tab value="sell">Sell</Tab>
+                <Tab value="exchange">Exchange</Tab>
+                <Tab value="liquidity">Liquidity</Tab>
+                <Tab value="swap">Swap</Tab>
               </TabsList>
 
-              <TabPanel value="buy">
-                <div className="space-y-4">
-                  <Input
-                    label="Amount to spend"
-                    type="number"
-                    placeholder="0.00"
-                    value={buyAmount}
-                    onChange={(e) => setBuyAmount(e.target.value)}
-                    suffix="ADA"
-                  />
-                  <div className="flex justify-between text-sm text-slate-400">
-                    <span>Available:</span>
-                    <span>Connect wallet to see balance</span>
-                  </div>
+              <TabPanel value="exchange">
+                <Tabs defaultValue="buy">
+                  <TabsList className="w-full">
+                    <Tab value="buy">Buy</Tab>
+                    <Tab value="sell">Sell</Tab>
+                  </TabsList>
 
-                  <Input
-                    label="Estimated to receive"
-                    type="text"
-                    placeholder="0.00"
-                    value={
-                      buyAmount && currentPrice
-                        ? (
-                            (parseFloat(buyAmount) * adaPrice) /
-                            currentPrice
-                          ).toFixed(4)
-                        : ""
-                    }
-                    disabled
-                    suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
-                  />
+                  <TabPanel value="buy">
+                    <div className="space-y-4">
+                      <Input
+                        label="Amount to spend"
+                        type="number"
+                        placeholder="0.00"
+                        value={buyAmount}
+                        onChange={(e) => setBuyAmount(e.target.value)}
+                        suffix="ADA"
+                      />
+                      <div className="flex justify-between text-sm text-slate-400">
+                        <span>Available:</span>
+                        <span>Connect wallet to see balance</span>
+                      </div>
 
-                  <Button fullWidth disabled={!connection}>
-                    {connection ? "Buy eBasket" : "Connect Wallet to Trade"}
-                  </Button>
+                      <Input
+                        label="Estimated to receive"
+                        type="text"
+                        placeholder="0.00"
+                        value={
+                          buyAmount && currentPrice
+                            ? (
+                                (parseFloat(buyAmount) * adaPrice) /
+                                currentPrice
+                              ).toFixed(4)
+                            : ""
+                        }
+                        disabled
+                        suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
+                      />
 
-                  {!connection && (
-                    <p className="text-xs text-center text-slate-500">
-                      Connect wallet to trade
-                    </p>
-                  )}
+                      <Button fullWidth disabled={!connection}>
+                        {connection ? "Buy eBasket" : "Connect Wallet to Trade"}
+                      </Button>
 
-                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-400">
-                    ⚠️ Trading is a demo feature. In production, this would integrate with a DEX.
-                  </div>
-                </div>
+                      {!connection && (
+                        <p className="text-xs text-center text-slate-500">
+                          Connect wallet to trade
+                        </p>
+                      )}
+
+                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-400">
+                        ⚠️ Trading is a demo feature. In production, this would
+                        integrate with a DEX.
+                      </div>
+                    </div>
+                  </TabPanel>
+
+                  <TabPanel value="sell">
+                    <div className="space-y-4">
+                      <Input
+                        label="Amount to sell"
+                        type="number"
+                        placeholder="0.00"
+                        value={sellAmount}
+                        onChange={(e) => setSellAmount(e.target.value)}
+                        suffix="tokens"
+                      />
+                      <div className="flex justify-between text-sm text-slate-400">
+                        <span>Available:</span>
+                        <span>0 tokens</span>
+                      </div>
+
+                      <Input
+                        label="Estimated to receive"
+                        type="text"
+                        placeholder="0.00"
+                        value={
+                          sellAmount && currentPrice
+                            ? (
+                                parseFloat(sellAmount) *
+                                currentPrice /
+                                adaPrice
+                              ).toFixed(2)
+                            : ""
+                        }
+                        disabled
+                        suffix="ADA"
+                      />
+
+                      <Button fullWidth variant="danger" disabled={!connection}>
+                        {connection ? "Sell eBasket" : "Connect Wallet to Trade"}
+                      </Button>
+
+                      <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-400">
+                        ⚠️ Trading is a demo feature. In production, this would
+                        integrate with a DEX.
+                      </div>
+                    </div>
+                  </TabPanel>
+                </Tabs>
               </TabPanel>
 
-              <TabPanel value="sell">
-                <div className="space-y-4">
-                  <Input
-                    label="Amount to sell"
-                    type="number"
-                    placeholder="0.00"
-                    value={sellAmount}
-                    onChange={(e) => setSellAmount(e.target.value)}
-                    suffix="tokens"
-                  />
-                  <div className="flex justify-between text-sm text-slate-400">
-                    <span>Available:</span>
-                    <span>0 tokens</span>
-                  </div>
+              <TabPanel value="liquidity">
+                <Tabs defaultValue="create_pool">
+                  <TabsList className="w-full">
+                    <Tab value="create_pool">Create Pool</Tab>
+                    <Tab value="add_liquidity">Add Liquidity</Tab>
+                    <Tab value="remove_liquidity">Remove Liquidity</Tab>
+                  </TabsList>
 
-                  <Input
-                    label="Estimated to receive"
-                    type="text"
-                    placeholder="0.00"
-                    value={
-                      sellAmount && currentPrice
-                        ? (
-                            parseFloat(sellAmount) *
-                            currentPrice /
-                            adaPrice
-                          ).toFixed(2)
-                        : ""
-                    }
-                    disabled
-                    suffix="ADA"
-                  />
+                  <TabPanel value="create_pool">
+                    <div className="space-y-4">
+                      <Input
+                        label="Initial ADA Amount"
+                        type="number"
+                        placeholder="0.00"
+                        value={initialAdaAmount}
+                        onChange={(e) => setInitialAdaAmount(e.target.value)}
+                        suffix="ADA"
+                      />
+                      <Input
+                        label="Initial Basket Amount"
+                        type="number"
+                        placeholder="0.00"
+                        value={initialBasketAmount}
+                        onChange={(e) => setInitialBasketAmount(e.target.value)}
+                        suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
+                      />
+                      <Button
+                        fullWidth
+                        disabled={!connection || !txBuilder || !selectedBasketId || parseFloat(initialAdaAmount) <= 0 || parseFloat(initialBasketAmount) <= 0}
+                        onClick={async () => {
+                          if (!txBuilder || !selectedBasketId || !lucid || !pkh) return;
+                          try {
+                            // Find the basket UTxO
+                            const basketUtxos = await txBuilder.getBasketUtxos();
+                            const basketUtxo = basketUtxos.find(u => {
+                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
+                                return datum.basket_id === selectedBasketId;
+                            });
 
-                  <Button fullWidth variant="danger" disabled={!connection}>
-                    {connection ? "Sell eBasket" : "Connect Wallet to Trade"}
-                  </Button>
+                            if (!basketUtxo) {
+                                toast.error("Selected basket UTxO not found.");
+                                return;
+                            }
 
-                  <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg text-sm text-yellow-400">
-                    ⚠️ Trading is a demo feature. In production, this would integrate with a DEX.
-                  </div>
-                </div>
+                            const tx = await txBuilder.createLiquidityPool(
+                                basketUtxo,
+                                BigInt(parseFloat(initialBasketAmount) * Number(TOKEN_PRECISION)), // Corrected basket amount conversion
+                                adaToLovelace(parseFloat(initialAdaAmount))
+                            );
+                            const signedTx = await tx.sign.withWallet().complete();
+                            const txHash = await signedTx.submit();
+                            toast.success(`Pool created! Tx Hash: ${txHash}`);
+                            setInitialAdaAmount("");
+                            setInitialBasketAmount("");
+                          } catch (error: any) {
+                            console.error("Create pool error:", error);
+                            toast.error(`Error creating pool: ${error.message}`);
+                          }
+                        }}
+                      >
+                        {connection ? "Create Liquidity Pool" : "Connect Wallet"}
+                      </Button>
+                    </div>
+                  </TabPanel>
+
+                  <TabPanel value="add_liquidity">
+                    <div className="space-y-4">
+                      <Select
+                        options={poolOptions}
+                        value={selectedPoolId}
+                        onChange={(e) => setSelectedPoolId(e.target.value)}
+                        placeholder="Select Pool"
+                      />
+                      <Input
+                        label="ADA Amount to Add"
+                        type="number"
+                        placeholder="0.00"
+                        value={addAdaAmount}
+                        onChange={(e) => setAddAdaAmount(e.target.value)}
+                        suffix="ADA"
+                      />
+                      <Input
+                        label="Basket Amount to Add"
+                        type="number"
+                        placeholder="0.00"
+                        value={addBasketAmount}
+                        onChange={(e) => setAddBasketAmount(e.target.value)}
+                        suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
+                      />
+                      <Button
+                        fullWidth
+                        disabled={!connection || !txBuilder || !selectedPool || parseFloat(addAdaAmount) <= 0 || parseFloat(addBasketAmount) <= 0}
+                        onClick={async () => {
+                          if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
+                          try {
+                            // Find the basket UTxO
+                            const basketUtxos = await txBuilder.getBasketUtxos();
+                            const basketUtxo = basketUtxos.find(u => {
+                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
+                                return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
+                            });
+
+                            if (!basketUtxo) {
+                                toast.error("Selected basket UTxO not found for the pool.");
+                                return;
+                            }
+
+                            const tx = await txBuilder.addLiquidity(
+                                selectedPool,
+                                basketUtxo,
+                                BigInt(parseFloat(addBasketAmount) * Number(TOKEN_PRECISION)),
+                                adaToLovelace(parseFloat(addAdaAmount)),
+                                0n // minLpTokens - for simplicity, assuming 0 slippage tolerance for now
+                            );
+                            const signedTx = await tx.sign.withWallet().complete();
+                            const txHash = await signedTx.submit();
+                            toast.success(`Liquidity added! Tx Hash: ${txHash}`);
+                            setAddAdaAmount("");
+                            setAddBasketAmount("");
+                            // Refresh pools
+                            const pools = await txBuilder.getLiquidityPoolUtxos();
+                            setPoolUtxos(pools);
+                          } catch (error: any) {
+                            console.error("Add liquidity error:", error);
+                            toast.error(`Error adding liquidity: ${error.message}`);
+                          }
+                        }}
+                      >
+                        {connection ? "Add Liquidity" : "Connect Wallet"}
+                      </Button>
+                    </div>
+                  </TabPanel>
+
+                  <TabPanel value="remove_liquidity">
+                    <div className="space-y-4">
+                      <Select
+                        options={poolOptions}
+                        value={selectedPoolId}
+                        onChange={(e) => setSelectedPoolId(e.target.value)}
+                        placeholder="Select Pool"
+                      />
+                      <Input
+                        label="LP Tokens to Remove"
+                        type="number"
+                        placeholder="0.00"
+                        value={removeLpTokens}
+                        onChange={(e) => setRemoveLpTokens(e.target.value)}
+                        suffix="LP"
+                      />
+                      <Button
+                        fullWidth
+                        disabled={!connection || !txBuilder || !selectedPool || parseFloat(removeLpTokens) <= 0}
+                        onClick={async () => {
+                          if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
+                          try {
+                            const tx = await txBuilder.removeLiquidity(
+                                selectedPool,
+                                BigInt(parseFloat(removeLpTokens) * Number(TOKEN_PRECISION)),
+                                0n, // minBasket - for simplicity, assuming 0 slippage tolerance for now
+                                0n  // minAda - for simplicity, assuming 0 slippage tolerance for now
+                            );
+                            const signedTx = await tx.sign.withWallet().complete();
+                            const txHash = await signedTx.submit();
+                            toast.success(`Liquidity removed! Tx Hash: ${txHash}`);
+                            setRemoveLpTokens("");
+                            // Refresh pools
+                            const pools = await txBuilder.getLiquidityPoolUtxos();
+                            setPoolUtxos(pools);
+                          } catch (error: any) {
+                            console.error("Remove liquidity error:", error);
+                            toast.error(`Error removing liquidity: ${error.message}`);
+                          }
+                        }}
+                      >
+                        {connection ? "Remove Liquidity" : "Connect Wallet"}
+                      </Button>
+                    </div>
+                  </TabPanel>
+                </Tabs>
+              </TabPanel>
+
+              <TabPanel value="swap">
+                <Tabs defaultValue="basket_to_ada">
+                  <TabsList className="w-full">
+                    <Tab value="basket_to_ada">Basket {"->"} ADA</Tab>
+                    <Tab value="ada_to_basket">ADA {"->"} Basket</Tab>
+                  </TabsList>
+
+                  <TabPanel value="basket_to_ada">
+                    <div className="space-y-4">
+                      <Select
+                        options={poolOptions}
+                        value={selectedPoolId}
+                        onChange={(e) => setSelectedPoolId(e.target.value)}
+                        placeholder="Select Pool"
+                      />
+                      <Input
+                        label="Basket Amount to Swap"
+                        type="number"
+                        placeholder="0.00"
+                        value={swapBasketIn}
+                        onChange={(e) => setSwapBasketIn(e.target.value)}
+                        suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
+                      />
+                      <Input
+                        label="Estimated ADA Out"
+                        type="text"
+                        placeholder="0.00"
+                        disabled
+                        suffix="ADA"
+                        value={
+                          selectedPool && txBuilder && parseFloat(swapBasketIn) > 0
+                            ? lovelaceToAda(
+                                txBuilder.calculateSwapOutput(
+                                  BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                                  txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve,
+                                  txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve
+                                )
+                              ).toFixed(2)
+                            : ""
+                        }
+                      />
+                      <Button
+                        fullWidth
+                        disabled={!connection || !txBuilder || !selectedPool || parseFloat(swapBasketIn) <= 0}
+                        onClick={async () => {
+                          if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
+                          try {
+                            // Find the basket UTxO
+                            const basketUtxos = await txBuilder.getBasketUtxos();
+                            const basketUtxo = basketUtxos.find(u => {
+                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
+                                return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
+                            });
+
+                            if (!basketUtxo) {
+                                toast.error("Selected basket UTxO not found for the pool.");
+                                return;
+                            }
+
+                            const estimatedAdaOut = txBuilder.calculateSwapOutput(
+                                BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                                txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve,
+                                txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve
+                            );
+
+                            const tx = await txBuilder.swapBasketForAda(
+                                selectedPool,
+                                basketUtxo,
+                                BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                                estimatedAdaOut // minAdaOut - assuming no slippage for now
+                            );
+                            const signedTx = await tx.sign.withWallet().complete();
+                            const txHash = await signedTx.submit();
+                            toast.success(`Swap successful! Tx Hash: ${txHash}`);
+                            setSwapBasketIn("");
+                            // Refresh pools
+                            const pools = await txBuilder.getLiquidityPoolUtxos();
+                            setPoolUtxos(pools);
+                          } catch (error: any) {
+                            console.error("Swap error:", error);
+                            toast.error(`Error swapping: ${error.message}`);
+                          }
+                        }}
+                      >
+                        {connection ? "Swap Basket for ADA" : "Connect Wallet"}
+                      </Button>
+                    </div>
+                  </TabPanel>
+
+                  <TabPanel value="ada_to_basket">
+                    <div className="space-y-4">
+                      <Select
+                        options={poolOptions}
+                        value={selectedPoolId}
+                        onChange={(e) => setSelectedPoolId(e.target.value)}
+                        placeholder="Select Pool"
+                      />
+                      <Input
+                        label="ADA Amount to Swap"
+                        type="number"
+                        placeholder="0.00"
+                        value={swapAdaIn}
+                        onChange={(e) => setSwapAdaIn(e.target.value)}
+                        suffix="ADA"
+                      />
+                      <Input
+                        label="Estimated Basket Out"
+                        type="text"
+                        placeholder="0.00"
+                        disabled
+                        suffix={selectedBasket?.name?.split(" ")[0] || "tokens"}
+                        value={
+                          selectedPool && txBuilder && parseFloat(swapAdaIn) > 0
+                            ? unitsToTokens(
+                                txBuilder.calculateSwapOutput(
+                                  adaToLovelace(parseFloat(swapAdaIn)),
+                                  txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve,
+                                  txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve
+                                )
+                              ).toFixed(2)
+                            : ""
+                        }
+                      />
+                      <Button
+                        fullWidth
+                        disabled={!connection || !txBuilder || !selectedPool || parseFloat(swapAdaIn) <= 0}
+                        onClick={async () => {
+                          if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
+                          try {
+                            const estimatedBasketOut = txBuilder.calculateSwapOutput(
+                                adaToLovelace(parseFloat(swapAdaIn)),
+                                txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve,
+                                txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve
+                            );
+
+                            const tx = await txBuilder.swapAdaForBasket(
+                                selectedPool,
+                                adaToLovelace(parseFloat(swapAdaIn)),
+                                estimatedBasketOut // minBasketOut - assuming no slippage for now
+                            );
+                            const signedTx = await tx.sign.withWallet().complete();
+                            const txHash = await signedTx.submit();
+                            toast.success(`Swap successful! Tx Hash: ${txHash}`);
+                            setSwapAdaIn("");
+                            // Refresh pools
+                            const pools = await txBuilder.getLiquidityPoolUtxos();
+                            setPoolUtxos(pools);
+                          } catch (error: any) {
+                            console.error("Swap error:", error);
+                            toast.error(`Error swapping: ${error.message}`);
+                          }
+                        }}
+                      >
+                        {connection ? "Swap ADA for Basket" : "Connect Wallet"}
+                      </Button>
+                    </div>
+                  </TabPanel>
+                </Tabs>
               </TabPanel>
             </Tabs>
           </Card>

@@ -21,6 +21,9 @@ import type {
   BasketDatum, 
   VaultDatum, 
   OracleDatum, 
+  PoolDatum, 
+  PoolRedeemer, 
+  LpMintRedeemer, 
   BasketAsset,
   TxStatus,
   LogEntry,
@@ -79,12 +82,15 @@ export const Validators = {
   // Vault is parameterized with oracle and basket factory script hashes
   vault: (): Validator => ({ type: "PlutusV3", script: AppliedScripts.Vault }),
   basketTokenPolicy: (): Validator => ({ type: "PlutusV3", script: Scripts.BasketTokenPolicy }),
+  liquidityPool: (): Validator => ({ type: "PlutusV3", script: AppliedScripts.LiquidityPool }), // New
+  lpTokenPolicy: (): Validator => ({ type: "PlutusV3", script: Scripts.LpTokenPolicy }), // New
 };
 
 export const ValidatorAddresses = {
   basketFactory: () => validatorToAddress(network, Validators.basketFactory()),
   mockOracle: () => validatorToAddress(network, Validators.mockOracle()),
   vault: () => validatorToAddress(network, Validators.vault()),
+  liquidityPool: () => validatorToAddress(network, Validators.liquidityPool()), // New
 };
 
 // =============================================================================
@@ -160,6 +166,19 @@ export function encodeVaultDatum(datum: VaultDatum): string {
   return Data.to(datumData);
 }
 
+export function encodePoolDatum(datum: PoolDatum): string {
+  // PoolDatum { basket_id, basket_reserve, ada_reserve, lp_token_supply, created_at }
+  const datumData = new Constr(0, [
+    fromText(datum.basket_id),
+    datum.basket_reserve,
+    datum.ada_reserve,
+    datum.lp_token_supply,
+    datum.created_at,
+  ]);
+
+  return Data.to(datumData);
+}
+
 // =============================================================================
 // REDEEMER CONSTRUCTORS
 // =============================================================================
@@ -191,6 +210,25 @@ export const MintRedeemers = {
   burn: (txId: string, outputIndex: number): string => Data.to(new Constr(0, [
     new Constr(1, []),  // BurnTokens
     new Constr(0, [txId, BigInt(outputIndex)]),  // OutputReference
+  ])),
+};
+
+export const PoolRedeemers = {
+  createPool: (initialBasket: bigint, initialAda: bigint): string => Data.to(new Constr(0, [initialBasket, initialAda])),
+  addLiquidity: (basketAmount: bigint, adaAmount: bigint, minLpTokens: bigint): string => Data.to(new Constr(1, [basketAmount, adaAmount, minLpTokens])),
+  removeLiquidity: (lpTokens: bigint, minBasket: bigint, minAda: bigint): string => Data.to(new Constr(2, [lpTokens, minBasket, minAda])),
+  swapBasketForAda: (basketIn: bigint, minAdaOut: bigint): string => Data.to(new Constr(3, [basketIn, minAdaOut])),
+  swapAdaForBasket: (adaIn: bigint, minBasketOut: bigint): string => Data.to(new Constr(4, [adaIn, minBasketOut])),
+};
+
+export const LpMintRedeemers = {
+  mintLpTokens: (poolRef: UTxO): string => Data.to(new Constr(0, [
+    new Constr(0, []), // MintLpTokens
+    new Constr(0, [poolRef.txHash, BigInt(poolRef.outputIndex)]), // OutputReference
+  ])),
+  burnLpTokens: (poolRef: UTxO): string => Data.to(new Constr(0, [
+    new Constr(1, []), // BurnLpTokens
+    new Constr(0, [poolRef.txHash, BigInt(poolRef.outputIndex)]), // OutputReference
   ])),
 };
 
@@ -255,6 +293,33 @@ export function decodeBasketDatum(datumHex: string): BasketDatum {
   } catch (error) {
     log("error", "Failed to decode BasketDatum", error);
     throw new Error(`Failed to decode BasketDatum: ${error}`);
+  }
+}
+
+/**
+ * Decode a PoolDatum from its CBOR hex representation
+ * PoolDatum = Constr(0, [basket_id, basket_reserve, ada_reserve, lp_token_supply, created_at])
+ */
+export function decodePoolDatum(datumHex: string): PoolDatum {
+  try {
+    const decoded = Data.from(datumHex) as Constr<Data>;
+
+    if (decoded.index !== 0 || decoded.fields.length !== 5) {
+      throw new Error("Invalid PoolDatum structure");
+    }
+
+    const [basket_id, basket_reserve, ada_reserve, lp_token_supply, created_at] = decoded.fields;
+
+    return {
+      basket_id: toText(basket_id as string),
+      basket_reserve: basket_reserve as bigint,
+      ada_reserve: ada_reserve as bigint,
+      lp_token_supply: lp_token_supply as bigint,
+      created_at: created_at as bigint,
+    };
+  } catch (error) {
+    log("error", "Failed to decode PoolDatum", error);
+    throw new Error(`Failed to decode PoolDatum: ${error}`);
   }
 }
 
@@ -591,6 +656,208 @@ export class EquiBasketTxBuilder {
     log("info", "Burn transaction built successfully");
     return tx;
   }
+
+  // ---------------------------------------------------------------------------
+  // LIQUIDITY POOL TRANSACTIONS
+  // ---------------------------------------------------------------------------
+
+  async createLiquidityPool(
+    basketUtxo: UTxO, // Reference to the basket UTxO (from factory)
+    initialBasketAmount: bigint,
+    initialAdaAmount: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Building create liquidity pool transaction", { initialBasketAmount, initialAdaAmount });
+
+    const poolAddress = ValidatorAddresses.liquidityPool();
+    const lpMintingPolicy = Validators.lpTokenPolicy();
+    const lpPolicyId = mintingPolicyToId(lpMintingPolicy);
+
+    // Get basket ID from the basket UTxO
+    const basketDatum = decodeBasketDatum(basketUtxo.datum as string);
+    const basketId = basketDatum.basket_id;
+
+    // LP token name is the basketId
+    const lpTokenName = fromText(basketId);
+    const lpAssetUnit = toUnit(lpPolicyId, lpTokenName);
+
+    const datum: PoolDatum = {
+      basket_id: basketId,
+      basket_reserve: initialBasketAmount,
+      ada_reserve: initialAdaAmount,
+      lp_token_supply: 0n, // Will be updated on-chain
+      created_at: BigInt(Date.now()),
+    };
+
+    const poolRedeemer = PoolRedeemers.createPool(initialBasketAmount, initialAdaAmount);
+    const lpMintRedeemer = LpMintRedeemers.mintLpTokens(basketUtxo); // Using basketUtxo as poolRef for initial mint
+
+    const tx = await this.lucid
+      .newTx()
+      .readFrom([basketUtxo]) // Reference to the basket UTxO
+      .collectFrom(
+        await this.lucid.wallet.getUtxos(), // Collect from wallet for initial ADA & Basket
+        poolRedeemer
+      )
+      .pay.ToAddressWithData(
+        poolAddress,
+        { kind: "inline", value: encodePoolDatum(datum) },
+        { lovelace: initialAdaAmount, [lpAssetUnit]: initialBasketAmount } // Pay initial ADA and basket tokens
+      )
+      .mintAssets({ [lpAssetUnit]: 0n }, lpMintRedeemer) // Mint 0 LP tokens initially, validator will adjust
+      .attach.SpendingValidator(Validators.liquidityPool())
+      .attach.MintingPolicy(lpMintingPolicy)
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Create liquidity pool transaction built successfully");
+    return tx;
+  }
+
+  async addLiquidity(
+    poolUtxo: UTxO,
+    basketUtxo: UTxO,
+    basketAmount: bigint,
+    adaAmount: bigint,
+    minLpTokens: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Building add liquidity transaction", { basketAmount, adaAmount, minLpTokens });
+
+    const pool = Validators.liquidityPool();
+    const lpMintingPolicy = Validators.lpTokenPolicy();
+    const lpPolicyId = mintingPolicyToId(lpMintingPolicy);
+
+    const poolDatum = decodePoolDatum(poolUtxo.datum as string);
+    const basketId = poolDatum.basket_id;
+
+    const lpTokenName = fromText(basketId);
+    const lpAssetUnit = toUnit(lpPolicyId, lpTokenName);
+
+    const poolRedeemer = PoolRedeemers.addLiquidity(basketAmount, adaAmount, minLpTokens);
+    const lpMintRedeemer = LpMintRedeemers.mintLpTokens(poolUtxo);
+
+    const tx = await this.lucid
+      .newTx()
+      .readFrom([basketUtxo])
+      .collectFrom([poolUtxo], poolRedeemer)
+      .mintAssets({ [lpAssetUnit]: 0n }, lpMintRedeemer) // Mint 0 LP tokens initially, validator will adjust
+      .pay.ToAddress(
+        ValidatorAddresses.liquidityPool(),
+        { lovelace: poolUtxo.assets.lovelace + adaAmount, [lpAssetUnit]: poolUtxo.assets[lpAssetUnit] + basketAmount }
+      )
+      .attach.SpendingValidator(pool)
+      .attach.MintingPolicy(lpMintingPolicy)
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Add liquidity transaction built successfully");
+    return tx;
+  }
+
+  async removeLiquidity(
+    poolUtxo: UTxO,
+    lpTokens: bigint,
+    minBasket: bigint,
+    minAda: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Building remove liquidity transaction", { lpTokens, minBasket, minAda });
+
+    const pool = Validators.liquidityPool();
+    const lpMintingPolicy = Validators.lpTokenPolicy();
+    const lpPolicyId = mintingPolicyToId(lpMintingPolicy);
+
+    const poolDatum = decodePoolDatum(poolUtxo.datum as string);
+    const basketId = poolDatum.basket_id;
+
+    const lpTokenName = fromText(basketId);
+    const lpAssetUnit = toUnit(lpPolicyId, lpTokenName);
+
+    const poolRedeemer = PoolRedeemers.removeLiquidity(lpTokens, minBasket, minAda);
+    const lpBurnRedeemer = LpMintRedeemers.burnLpTokens(poolUtxo);
+
+    const tx = await this.lucid
+      .newTx()
+      .collectFrom([poolUtxo], poolRedeemer)
+      .mintAssets({ [lpAssetUnit]: -lpTokens }, lpBurnRedeemer) // Burn LP tokens
+      .pay.ToAddress(
+        this.address, // Return to user
+        { lovelace: minAda, [lpAssetUnit]: minBasket } // Return min ADA and Basket
+      )
+      .attach.SpendingValidator(pool)
+      .attach.MintingPolicy(lpMintingPolicy)
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Remove liquidity transaction built successfully");
+    return tx;
+  }
+
+  async swapBasketForAda(
+    poolUtxo: UTxO,
+    basketUtxo: UTxO,
+    basketIn: bigint,
+    minAdaOut: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Building swap basket for ADA transaction", { basketIn, minAdaOut });
+
+    const pool = Validators.liquidityPool();
+
+    const poolDatum = decodePoolDatum(poolUtxo.datum as string);
+    const basketId = poolDatum.basket_id;
+
+    const poolRedeemer = PoolRedeemers.swapBasketForAda(basketIn, minAdaOut);
+
+    const tx = await this.lucid
+      .newTx()
+      .readFrom([basketUtxo])
+      .collectFrom([poolUtxo], poolRedeemer)
+      .pay.ToAddress(
+        ValidatorAddresses.liquidityPool(),
+        { lovelace: poolUtxo.assets.lovelace - minAdaOut, [toUnit("", fromText(basketId))]: (poolUtxo.assets[toUnit("", fromText(basketId))] || 0n) + basketIn } // Update pool reserves
+      )
+      .pay.ToAddress(this.address, { lovelace: minAdaOut }) // Send ADA to user
+      .attach.SpendingValidator(pool)
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Swap basket for ADA transaction built successfully");
+    return tx;
+  }
+
+  async swapAdaForBasket(
+    poolUtxo: UTxO,
+    adaIn: bigint,
+    minBasketOut: bigint
+  ): Promise<TxSignBuilder> {
+    log("info", "Building swap ADA for basket transaction", { adaIn, minBasketOut });
+
+    const pool = Validators.liquidityPool();
+
+    const poolDatum = decodePoolDatum(poolUtxo.datum as string);
+    const basketId = poolDatum.basket_id;
+
+    const poolRedeemer = PoolRedeemers.swapAdaForBasket(adaIn, minBasketOut);
+
+    const tx = await this.lucid
+      .newTx()
+      .collectFrom([poolUtxo], poolRedeemer)
+      .pay.ToAddress(
+        ValidatorAddresses.liquidityPool(),
+        { lovelace: poolUtxo.assets.lovelace + adaIn, [toUnit("", fromText(basketId))]: (poolUtxo.assets[toUnit("", fromText(basketId))] || 0n) - minBasketOut } // Update pool reserves
+      )
+      .pay.ToAddress(this.address, { [toUnit("", fromText(basketId))]: minBasketOut }) // Send basket tokens to user
+      .attach.SpendingValidator(pool)
+      .addSignerKey(this.pkh)
+      .validTo(Date.now() + 15 * 60_000)
+      .complete();
+
+    log("info", "Swap ADA for basket transaction built successfully");
+    return tx;
+  }
+
   
   // ---------------------------------------------------------------------------
   // QUERY FUNCTIONS
@@ -672,6 +939,24 @@ export class EquiBasketTxBuilder {
     // Filter by owner (would need to parse datums)
     // For now, return all vaults
     return allVaults;
+  }
+
+  async getLiquidityPoolUtxos(): Promise<UTxO[]> {
+    const address = ValidatorAddresses.liquidityPool();
+    const utxos = await this.lucid.utxosAt(address);
+
+    // Debug: Log liquidity pool UTxOs
+    log("debug", `Found ${utxos.length} liquidity pool UTxO(s) at ${address}`);
+    utxos.forEach((utxo, i) => {
+      log("debug", `Liquidity Pool UTxO[${i}]:`, {
+        txHash: utxo.txHash,
+        outputIndex: utxo.outputIndex,
+        hasDatum: !!utxo.datum,
+        lovelace: utxo.assets.lovelace?.toString() || "0",
+      });
+    });
+
+    return utxos;
   }
 }
 
