@@ -101,12 +101,11 @@ export function MintBurnPage() {
       // Default prices from our oracle data
       const PRICE_PRECISION = 1_000_000n;
       const defaultPrices: Array<[string, bigint]> = [
-        ["BTC", 60_000n * PRICE_PRECISION],
-        ["ETH", 3_000n * PRICE_PRECISION],
-        ["SOL", 150n * PRICE_PRECISION],
-        ["ADA", 500_000n],  // 0.5 USD in micro-units
-        ["LINK", 15n * PRICE_PRECISION],
-        ["DOT", 7n * PRICE_PRECISION],
+        ["Gold", 2_650n * PRICE_PRECISION],      // $2,650 per troy ounce
+        ["Silver", 30_500_000n],                  // $30.50 per troy ounce
+        ["AAPL", 240n * PRICE_PRECISION],        // $240.00
+        ["NVDA", 145n * PRICE_PRECISION],        // $145.00
+        ["Hitachi", 23_500_000n],                // $23.50
       ];
 
       const tx = await txBuilder.publishOracle(defaultPrices);
@@ -501,18 +500,17 @@ export function MintBurnPage() {
               The price oracle needs to be deployed before you can mint or burn tokens.
             </p>
             <p className="text-slate-500 text-sm mb-6">
-              The oracle provides price feeds for assets (BTC, ETH, SOL, ADA, LINK, DOT) that are used to calculate basket values and collateral requirements.
+              The oracle provides price feeds for assets (Gold, Silver, Apple, Nvidia, Hitachi) that are used to calculate basket values and collateral requirements.
             </p>
 
             <div className="bg-slate-700/50 rounded-lg p-4 mb-6 text-left">
               <div className="text-sm font-medium text-white mb-2">Default Oracle Prices:</div>
               <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-400">BTC</span><span className="text-white">$60,000</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">ETH</span><span className="text-white">$3,000</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">SOL</span><span className="text-white">$150</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">ADA</span><span className="text-white">$0.50</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">LINK</span><span className="text-white">$15</span></div>
-                <div className="flex justify-between"><span className="text-slate-400">DOT</span><span className="text-white">$7</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Gold</span><span className="text-white">$2,650</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Silver</span><span className="text-white">$30.50</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">AAPL</span><span className="text-white">$240</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">NVDA</span><span className="text-white">$145</span></div>
+                <div className="flex justify-between"><span className="text-slate-400">Hitachi</span><span className="text-white">$23.50</span></div>
               </div>
             </div>
 

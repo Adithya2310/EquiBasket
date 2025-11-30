@@ -294,21 +294,11 @@ export async function upsertOraclePrice(price: OraclePriceRecord): Promise<void>
 
 export async function seedOraclePrices(): Promise<void> {
   const defaultPrices: OraclePriceRecord[] = [
-    { asset_id: "BTC", asset_name: "Bitcoin", price_usd: 60000, updated_at: Date.now() },
-    { asset_id: "ETH", asset_name: "Ethereum", price_usd: 3000, updated_at: Date.now() },
-    { asset_id: "SOL", asset_name: "Solana", price_usd: 150, updated_at: Date.now() },
-    { asset_id: "ADA", asset_name: "Cardano", price_usd: 0.5, updated_at: Date.now() },
-    { asset_id: "LINK", asset_name: "Chainlink", price_usd: 15, updated_at: Date.now() },
-    { asset_id: "DOT", asset_name: "Polkadot", price_usd: 7, updated_at: Date.now() },
-    { asset_id: "Gold", asset_name: "Gold", price_usd: 4232.20, updated_at: Date.now() },
-    { asset_id: "Silver", asset_name: "Silver", price_usd: 56.63, updated_at: Date.now() },
-    { asset_id: "AAPL", asset_name: "Apple", price_usd: 277.50, updated_at: Date.now() },
-    { asset_id: "MSFT", asset_name: "Microsoft", price_usd: 491.74, updated_at: Date.now() },
-    { asset_id: "GOOGL", asset_name: "Alphabet", price_usd: 320.57, updated_at: Date.now() },
-    { asset_id: "AMZN", asset_name: "Amazon", price_usd: 230.05, updated_at: Date.now() },
-    { asset_id: "NVDA", asset_name: "Nvidia", price_usd: 181.34, updated_at: Date.now() },
-    { asset_id: "META", asset_name: "Meta", price_usd: 647.35, updated_at: Date.now() },
-    { asset_id: "TSLA", asset_name: "Tesla", price_usd: 426.57, updated_at: Date.now() },
+    { asset_id: "Gold", asset_name: "Gold", price_usd: 2650.00, updated_at: Date.now() },
+    { asset_id: "Silver", asset_name: "Silver", price_usd: 30.50, updated_at: Date.now() },
+    { asset_id: "AAPL", asset_name: "Apple", price_usd: 240.00, updated_at: Date.now() },
+    { asset_id: "NVDA", asset_name: "Nvidia", price_usd: 145.00, updated_at: Date.now() },
+    { asset_id: "Hitachi", asset_name: "Hitachi", price_usd: 23.50, updated_at: Date.now() },
   ];
 
   for (const price of defaultPrices) {
