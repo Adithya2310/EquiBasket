@@ -3,6 +3,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useWallet } from "@/components/connection/context";
 import { Button } from "@/components/ui";
@@ -38,20 +39,15 @@ export function Navbar({ onConnectWallet }: NavbarProps) {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center">
-              <svg
-                className="w-5 h-5 text-white"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M13 10V3L4 14h7v7l9-11h-7z"
-                />
-              </svg>
+            <div className="w-8 h-8 relative">
+              <Image
+                src="/logo.png"
+                alt="EquiBasket Logo"
+                width={40}
+                height={40}
+                className="rounded-lg"
+                priority
+              />
             </div>
             <span className="text-xl font-bold text-white">EquiBasket</span>
           </Link>
@@ -66,10 +62,9 @@ export function Navbar({ onConnectWallet }: NavbarProps) {
                   href={item.href}
                   className={`
                     px-4 py-2 rounded-lg text-sm font-medium transition-colors
-                    ${
-                      isActive
-                        ? "text-white bg-slate-800"
-                        : "text-slate-400 hover:text-white hover:bg-slate-800/50"
+                    ${isActive
+                      ? "text-white bg-slate-800"
+                      : "text-slate-400 hover:text-white hover:bg-slate-800/50"
                     }
                   `}
                 >
