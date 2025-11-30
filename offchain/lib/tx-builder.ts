@@ -401,6 +401,22 @@ export function priceToUsd(price: bigint): number {
   return Number(price) / Number(PRICE_PRECISION);
 }
 
+// Match on-chain AMM formula: output = (output_reserve * input_with_fee) / (input_reserve*fee_precision + input_with_fee)
+// fee_precision = 1000, swap_fee = 3 (0.3%)
+export function calculateSwapOutput(
+  inputAmount: bigint,
+  inputReserve: bigint,
+  outputReserve: bigint
+): bigint {
+  const feePrecision = 1000n;
+  const swapFee = 3n;
+  const inputWithFee = inputAmount * (feePrecision - swapFee);
+  const numerator = outputReserve * inputWithFee;
+  const denominator = inputReserve * feePrecision + inputWithFee;
+  if (denominator === 0n) return 0n;
+  return numerator / denominator;
+}
+
 // =============================================================================
 // TRANSACTION BUILDER CLASS
 // =============================================================================
@@ -945,9 +961,22 @@ export class EquiBasketTxBuilder {
     log("info", "Building swap basket for ADA transaction", { basketIn, minAdaOut });
 
     const pool = Validators.liquidityPool();
+    const basketTokenPolicy = Validators.basketTokenPolicy();
+    const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
 
     const poolDatum = decodePoolDatum(poolUtxo.datum as string);
     const basketId = poolDatum.basket_id;
+    const basketAssetUnit = toUnit(basketPolicyId, fromText(basketId));
+
+    // Compute expected ADA out using same formula as on-chain; enforce slippage
+    const adaOut = calculateSwapOutput(
+      basketIn,
+      poolDatum.basket_reserve,
+      poolDatum.ada_reserve
+    );
+    if (adaOut < minAdaOut) {
+      throw new Error(`Slippage too high: expected ADA out ${adaOut} below minimum ${minAdaOut}`);
+    }
 
     const poolRedeemer = PoolRedeemers.swapBasketForAda(basketIn, minAdaOut);
 
@@ -955,11 +984,22 @@ export class EquiBasketTxBuilder {
       .newTx()
       .readFrom([basketUtxo])
       .collectFrom([poolUtxo], poolRedeemer)
-      .pay.ToAddress(
+      .pay.ToAddressWithData(
         ValidatorAddresses.liquidityPool(),
-        { lovelace: poolUtxo.assets.lovelace - minAdaOut, [toUnit("", fromText(basketId))]: (poolUtxo.assets[toUnit("", fromText(basketId))] || 0n) + basketIn } // Update pool reserves
+        {
+          kind: "inline",
+          value: encodePoolDatum({
+            ...poolDatum,
+            basket_reserve: poolDatum.basket_reserve + basketIn,
+            ada_reserve: poolDatum.ada_reserve - adaOut,
+          }),
+        },
+        {
+          lovelace: poolUtxo.assets.lovelace - adaOut,
+          [basketAssetUnit]: (poolUtxo.assets[basketAssetUnit] || 0n) + basketIn,
+        } // Update pool reserves
       )
-      .pay.ToAddress(this.address, { lovelace: minAdaOut }) // Send ADA to user
+      .pay.ToAddress(this.address, { lovelace: adaOut }) // Send ADA to user
       .attach.SpendingValidator(pool)
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
@@ -967,6 +1007,15 @@ export class EquiBasketTxBuilder {
 
     log("info", "Swap basket for ADA transaction built successfully");
     return tx;
+  }
+
+  // Offchain helper matching on-chain AMM math (exposed for UI estimates)
+  calculateSwapOutput(
+    inputAmount: bigint,
+    inputReserve: bigint,
+    outputReserve: bigint
+  ): bigint {
+    return calculateSwapOutput(inputAmount, inputReserve, outputReserve);
   }
 
   async swapAdaForBasket(
@@ -977,20 +1026,44 @@ export class EquiBasketTxBuilder {
     log("info", "Building swap ADA for basket transaction", { adaIn, minBasketOut });
 
     const pool = Validators.liquidityPool();
+    const basketTokenPolicy = Validators.basketTokenPolicy();
+    const basketPolicyId = mintingPolicyToId(basketTokenPolicy);
 
     const poolDatum = decodePoolDatum(poolUtxo.datum as string);
     const basketId = poolDatum.basket_id;
+    const basketAssetUnit = toUnit(basketPolicyId, fromText(basketId));
+
+    // Compute expected basket out using same formula as on-chain; enforce slippage
+    const basketOut = calculateSwapOutput(
+      adaIn,
+      poolDatum.ada_reserve,
+      poolDatum.basket_reserve
+    );
+    if (basketOut < minBasketOut) {
+      throw new Error(`Slippage too high: expected basket out ${basketOut} below minimum ${minBasketOut}`);
+    }
 
     const poolRedeemer = PoolRedeemers.swapAdaForBasket(adaIn, minBasketOut);
 
     const tx = await this.lucid
       .newTx()
       .collectFrom([poolUtxo], poolRedeemer)
-      .pay.ToAddress(
+      .pay.ToAddressWithData(
         ValidatorAddresses.liquidityPool(),
-        { lovelace: poolUtxo.assets.lovelace + adaIn, [toUnit("", fromText(basketId))]: (poolUtxo.assets[toUnit("", fromText(basketId))] || 0n) - minBasketOut } // Update pool reserves
+        {
+          kind: "inline",
+          value: encodePoolDatum({
+            ...poolDatum,
+            basket_reserve: poolDatum.basket_reserve - basketOut,
+            ada_reserve: poolDatum.ada_reserve + adaIn,
+          }),
+        },
+        {
+          lovelace: poolUtxo.assets.lovelace + adaIn,
+          [basketAssetUnit]: (poolUtxo.assets[basketAssetUnit] || 0n) - basketOut,
+        } // Update pool reserves
       )
-      .pay.ToAddress(this.address, { [toUnit("", fromText(basketId))]: minBasketOut }) // Send basket tokens to user
+      .pay.ToAddress(this.address, { [basketAssetUnit]: basketOut }) // Send basket tokens to user
       .attach.SpendingValidator(pool)
       .addSignerKey(this.pkh)
       .validTo(Date.now() + 15 * 60_000)
