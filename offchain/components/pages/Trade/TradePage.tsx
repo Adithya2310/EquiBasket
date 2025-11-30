@@ -2,14 +2,14 @@
 
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useWallet } from "@/components/connection/context";
 import { useDatabase } from "@/components/database/DatabaseProvider";
 import { Button, Card, CardTitle, Input, Select } from "@/components/ui";
 import { Tabs, TabsList, Tab, TabPanel } from "@/components/ui";
-import { useLucid } from "@/hooks/useLucid"; // New
-import { EquiBasketTxBuilder, adaToLovelace, lovelaceToAda, unitsToTokens } from "@/lib/tx-builder"; // New
-import { TOKEN_PRECISION } from "@/config/scripts"; // New
+// import { useLucid } from "@/hooks/useLucid"; // New
+import { EquiBasketTxBuilder, adaToLovelace, lovelaceToAda, decodePoolDatum, decodeBasketDatum } from "@/lib/tx-builder"; // New
+import { TOKEN_PRECISION, unitsToTokens } from "@/config/scripts"; // New
 import { toast } from "react-hot-toast"; // New
 import type { UTxO } from "@evolution-sdk/lucid"; // New
 
@@ -18,7 +18,7 @@ const generateMockData = (basePrice: number) => {
   const data: { time: string; price: number }[] = [];
   let price = basePrice * 0.9;
   const now = new Date();
-  
+
   for (let i = 30; i >= 0; i--) {
     const date = new Date(now);
     date.setDate(date.getDate() - i);
@@ -40,9 +40,17 @@ const MOCK_ORDERS = [
   { date: "2023-10-23 10:05", basket: "eBASKET-ENERGY", type: "Buy", amount: "15.0", price: "$330.60" },
 ];
 
+
+
 export function TradePage() {
   const [connection] = useWallet();
-  const { lucid, pkh, address } = useLucid(); // New
+
+  if (!connection) return <span className="uppercase">Wallet Disconnected</span>;
+
+  const { api, lucid, address, pkh } = connection;
+
+  // const [connection] = useWallet();
+  // const { lucid, pkh, address } = useLucid(); // New
   const { baskets, oraclePrices, isLoading } = useDatabase();
 
   const txBuilder = useMemo(() => { // New
@@ -51,7 +59,7 @@ export function TradePage() {
     }
     return undefined;
   }, [lucid, address, pkh]);
-  
+
   const [selectedBasketId, setSelectedBasketId] = useState<string>("");
   const [timeRange, setTimeRange] = useState("1D");
   const [searchQuery, setSearchQuery] = useState("");
@@ -99,7 +107,7 @@ export function TradePage() {
           setPoolUtxos(pools);
           if (pools.length > 0 && !selectedPoolId) {
             // Decode datum to get basketId for selecting pool
-            const poolDatum = txBuilder.decodePoolDatum(pools[0].datum as string);
+            const poolDatum = decodePoolDatum(pools[0].datum as string);
             setSelectedPoolId(poolDatum.basket_id);
           }
         } catch (error) {
@@ -149,7 +157,7 @@ export function TradePage() {
   }));
 
   const poolOptions = poolUtxos.map((p) => {
-    const datum = txBuilder?.decodePoolDatum(p.datum as string);
+    const datum = decodePoolDatum(p.datum as string);
     return {
       value: datum?.basket_id || "",
       label: `Pool: ${datum?.basket_id} (ADA: ${lovelaceToAda(datum?.ada_reserve || 0n).toFixed(2)}, Basket: ${unitsToTokens(datum?.basket_reserve || 0n).toFixed(2)})`,
@@ -159,7 +167,7 @@ export function TradePage() {
   const selectedPool = useMemo(() => {
     if (!txBuilder) return undefined;
     const pool = poolUtxos.find((p) => {
-      const datum = txBuilder.decodePoolDatum(p.datum as string);
+      const datum = decodePoolDatum(p.datum as string);
       return datum.basket_id === selectedPoolId;
     });
     return pool;
@@ -211,9 +219,8 @@ export function TradePage() {
                 ${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
               </span>
               <span
-                className={`text-sm font-medium ${
-                  priceChange >= 0 ? "text-green-400" : "text-red-400"
-                }`}
+                className={`text-sm font-medium ${priceChange >= 0 ? "text-green-400" : "text-red-400"
+                  }`}
               >
                 {priceChange >= 0 ? "+" : ""}
                 {priceChange.toFixed(2)}%
@@ -227,11 +234,10 @@ export function TradePage() {
             <button
               key={range}
               onClick={() => setTimeRange(range)}
-              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                timeRange === range
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-400 hover:text-white"
-              }`}
+              className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${timeRange === range
+                ? "bg-blue-600 text-white"
+                : "text-slate-400 hover:text-white"
+                }`}
             >
               {range}
             </button>
@@ -284,9 +290,8 @@ export function TradePage() {
                   </linearGradient>
                 </defs>
                 <path
-                  d={`${linePath} L ${xScale(chartData.length - 1)} ${
-                    padding.top + innerHeight
-                  } L ${padding.left} ${padding.top + innerHeight} Z`}
+                  d={`${linePath} L ${xScale(chartData.length - 1)} ${padding.top + innerHeight
+                    } L ${padding.left} ${padding.top + innerHeight} Z`}
                   fill="url(#areaGradient)"
                 />
 
@@ -365,9 +370,9 @@ export function TradePage() {
                         value={
                           buyAmount && currentPrice
                             ? (
-                                (parseFloat(buyAmount) * adaPrice) /
-                                currentPrice
-                              ).toFixed(4)
+                              (parseFloat(buyAmount) * adaPrice) /
+                              currentPrice
+                            ).toFixed(4)
                             : ""
                         }
                         disabled
@@ -413,10 +418,10 @@ export function TradePage() {
                         value={
                           sellAmount && currentPrice
                             ? (
-                                parseFloat(sellAmount) *
-                                currentPrice /
-                                adaPrice
-                              ).toFixed(2)
+                              parseFloat(sellAmount) *
+                              currentPrice /
+                              adaPrice
+                            ).toFixed(2)
                             : ""
                         }
                         disabled
@@ -471,19 +476,19 @@ export function TradePage() {
                             // Find the basket UTxO
                             const basketUtxos = await txBuilder.getBasketUtxos();
                             const basketUtxo = basketUtxos.find(u => {
-                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
-                                return datum.basket_id === selectedBasketId;
+                              const datum = decodeBasketDatum(u.datum as string);
+                              return datum.basket_id === selectedBasketId;
                             });
 
                             if (!basketUtxo) {
-                                toast.error("Selected basket UTxO not found.");
-                                return;
+                              toast.error("Selected basket UTxO not found.");
+                              return;
                             }
 
                             const tx = await txBuilder.createLiquidityPool(
-                                basketUtxo,
-                                BigInt(parseFloat(initialBasketAmount) * Number(TOKEN_PRECISION)), // Corrected basket amount conversion
-                                adaToLovelace(parseFloat(initialAdaAmount))
+                              basketUtxo,
+                              BigInt(parseFloat(initialBasketAmount) * Number(TOKEN_PRECISION)), // Corrected basket amount conversion
+                              adaToLovelace(parseFloat(initialAdaAmount))
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -534,21 +539,21 @@ export function TradePage() {
                             // Find the basket UTxO
                             const basketUtxos = await txBuilder.getBasketUtxos();
                             const basketUtxo = basketUtxos.find(u => {
-                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
-                                return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
+                              const datum = decodeBasketDatum(u.datum as string);
+                              return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
                             });
 
                             if (!basketUtxo) {
-                                toast.error("Selected basket UTxO not found for the pool.");
-                                return;
+                              toast.error("Selected basket UTxO not found for the pool.");
+                              return;
                             }
 
                             const tx = await txBuilder.addLiquidity(
-                                selectedPool,
-                                basketUtxo,
-                                BigInt(parseFloat(addBasketAmount) * Number(TOKEN_PRECISION)),
-                                adaToLovelace(parseFloat(addAdaAmount)),
-                                0n // minLpTokens - for simplicity, assuming 0 slippage tolerance for now
+                              selectedPool,
+                              basketUtxo,
+                              BigInt(parseFloat(addBasketAmount) * Number(TOKEN_PRECISION)),
+                              adaToLovelace(parseFloat(addAdaAmount)),
+                              0n // minLpTokens - for simplicity, assuming 0 slippage tolerance for now
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -592,10 +597,10 @@ export function TradePage() {
                           if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
                           try {
                             const tx = await txBuilder.removeLiquidity(
-                                selectedPool,
-                                BigInt(parseFloat(removeLpTokens) * Number(TOKEN_PRECISION)),
-                                0n, // minBasket - for simplicity, assuming 0 slippage tolerance for now
-                                0n  // minAda - for simplicity, assuming 0 slippage tolerance for now
+                              selectedPool,
+                              BigInt(parseFloat(removeLpTokens) * Number(TOKEN_PRECISION)),
+                              0n, // minBasket - for simplicity, assuming 0 slippage tolerance for now
+                              0n  // minAda - for simplicity, assuming 0 slippage tolerance for now
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -649,12 +654,12 @@ export function TradePage() {
                         value={
                           selectedPool && txBuilder && parseFloat(swapBasketIn) > 0
                             ? lovelaceToAda(
-                                txBuilder.calculateSwapOutput(
-                                  BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
-                                  txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve,
-                                  txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve
-                                )
-                              ).toFixed(2)
+                              txBuilder.calculateSwapOutput(
+                                BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                                decodePoolDatum(selectedPool.datum as string).basket_reserve,
+                                decodePoolDatum(selectedPool.datum as string).ada_reserve
+                              )
+                            ).toFixed(2)
                             : ""
                         }
                       />
@@ -667,26 +672,26 @@ export function TradePage() {
                             // Find the basket UTxO
                             const basketUtxos = await txBuilder.getBasketUtxos();
                             const basketUtxo = basketUtxos.find(u => {
-                                const datum = txBuilder.decodeBasketDatum(u.datum as string);
-                                return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
+                              const datum = decodeBasketDatum(u.datum as string);
+                              return datum.basket_id === selectedPoolId; // Match basket to selected pool's basketId
                             });
 
                             if (!basketUtxo) {
-                                toast.error("Selected basket UTxO not found for the pool.");
-                                return;
+                              toast.error("Selected basket UTxO not found for the pool.");
+                              return;
                             }
 
                             const estimatedAdaOut = txBuilder.calculateSwapOutput(
-                                BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
-                                txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve,
-                                txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve
+                              BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                              decodePoolDatum(selectedPool.datum as string).basket_reserve,
+                              decodePoolDatum(selectedPool.datum as string).ada_reserve
                             );
 
                             const tx = await txBuilder.swapBasketForAda(
-                                selectedPool,
-                                basketUtxo,
-                                BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
-                                estimatedAdaOut // minAdaOut - assuming no slippage for now
+                              selectedPool,
+                              basketUtxo,
+                              BigInt(parseFloat(swapBasketIn) * Number(TOKEN_PRECISION)),
+                              estimatedAdaOut // minAdaOut - assuming no slippage for now
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -731,12 +736,12 @@ export function TradePage() {
                         value={
                           selectedPool && txBuilder && parseFloat(swapAdaIn) > 0
                             ? unitsToTokens(
-                                txBuilder.calculateSwapOutput(
-                                  adaToLovelace(parseFloat(swapAdaIn)),
-                                  txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve,
-                                  txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve
-                                )
-                              ).toFixed(2)
+                              txBuilder.calculateSwapOutput(
+                                adaToLovelace(parseFloat(swapAdaIn)),
+                                decodePoolDatum(selectedPool.datum as string).ada_reserve,
+                                decodePoolDatum(selectedPool.datum as string).basket_reserve
+                              )
+                            ).toFixed(2)
                             : ""
                         }
                       />
@@ -747,15 +752,15 @@ export function TradePage() {
                           if (!txBuilder || !selectedPool || !selectedBasketId || !lucid || !pkh) return;
                           try {
                             const estimatedBasketOut = txBuilder.calculateSwapOutput(
-                                adaToLovelace(parseFloat(swapAdaIn)),
-                                txBuilder.decodePoolDatum(selectedPool.datum as string).ada_reserve,
-                                txBuilder.decodePoolDatum(selectedPool.datum as string).basket_reserve
+                              adaToLovelace(parseFloat(swapAdaIn)),
+                              decodePoolDatum(selectedPool.datum as string).ada_reserve,
+                              decodePoolDatum(selectedPool.datum as string).basket_reserve
                             );
 
                             const tx = await txBuilder.swapAdaForBasket(
-                                selectedPool,
-                                adaToLovelace(parseFloat(swapAdaIn)),
-                                estimatedBasketOut // minBasketOut - assuming no slippage for now
+                              selectedPool,
+                              adaToLovelace(parseFloat(swapAdaIn)),
+                              estimatedBasketOut // minBasketOut - assuming no slippage for now
                             );
                             const signedTx = await tx.sign.withWallet().complete();
                             const txHash = await signedTx.submit();
@@ -855,11 +860,10 @@ export function TradePage() {
                       </td>
                       <td className="py-3 px-4">
                         <span
-                          className={`text-sm font-medium ${
-                            order.type === "Buy"
-                              ? "text-green-400"
-                              : "text-red-400"
-                          }`}
+                          className={`text-sm font-medium ${order.type === "Buy"
+                            ? "text-green-400"
+                            : "text-red-400"
+                            }`}
                         >
                           {order.type}
                         </span>
